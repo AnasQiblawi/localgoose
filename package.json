@@ -1,0 +1,37 @@
+{
+  "name": "localgoose",
+  "version": "1.0.0",
+  "description": "A lightweight, file-based ODM Database for Node.js, inspired by Mongoose",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node example.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "odm",
+    "database",
+    "json",
+    "mongoose",
+    "schema",
+    "nodejs",
+    "local-storage",
+    "file-based"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "bson": "^6.2.0",
+    "fs-extra": "^11.1.1",
+    "geolib": "^3.3.4",
+    "lodash": "^4.17.21"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AnasQiblawi/localgoose.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AnasQiblawi/localgoose/issues"
+  },
+  "homepage": "https://github.com/AnasQiblawi/localgoose#readme"
+}
