@@ -165,6 +165,306 @@ class Model {
   aggregate(pipeline = []) {
     return new Aggregate(this, pipeline);
   }
+
+
+  static $where(condition) {
+    return this.find({ $where: condition });
+  }
+
+  async applyDefaults(doc) {
+    for (const [path, schemaType] of this.schema._paths.entries()) {
+      if (doc[path] === undefined && schemaType.getDefault() !== undefined) {
+        doc[path] = schemaType.getDefault();
+      }
+    }
+    return doc;
+  }
+
+  applyTimestamps(doc) {
+    const now = new Date();
+    if (!doc.createdAt) {
+      doc.createdAt = now;
+    }
+    doc.updatedAt = now;
+    return doc;
+  }
+
+  applyVirtuals(doc) {
+    const virtuals = {};
+    for (const [path, virtual] of Object.entries(this.schema.virtuals)) {
+      virtuals[path] = virtual.applyGetters(undefined, doc);
+    }
+    return { ...doc, ...virtuals };
+  }
+
+  async bulkSave(docs, options = {}) {
+    const result = await this.bulkWrite(
+      docs.map(doc => ({
+        insertOne: { document: doc }
+      })),
+      options
+    );
+    return result;
+  }
+
+  async bulkWrite(operations, options = {}) {
+    const docs = await readJSON(this.collectionPath);
+    let nModified = 0;
+    let nInserted = 0;
+    let nUpserted = 0;
+    let nRemoved = 0;
+
+    for (const op of operations) {
+      if (op.insertOne) {
+        const doc = await this.applyDefaults(op.insertOne.document);
+        this.applyTimestamps(doc);
+        doc._id = new ObjectId().toString();
+        docs.push(doc);
+        nInserted++;
+      } else if (op.updateOne) {
+        const index = docs.findIndex(doc => 
+          this._matchQuery(doc, op.updateOne.filter)
+        );
+        if (index !== -1) {
+          Object.assign(docs[index], op.updateOne.update);
+          this.applyTimestamps(docs[index]);
+          nModified++;
+        } else if (op.updateOne.upsert) {
+          const doc = await this.applyDefaults({
+            ...op.updateOne.filter,
+            ...op.updateOne.update
+          });
+          this.applyTimestamps(doc);
+          doc._id = new ObjectId().toString();
+          docs.push(doc);
+          nUpserted++;
+        }
+      } else if (op.deleteOne) {
+        const index = docs.findIndex(doc => 
+          this._matchQuery(doc, op.deleteOne.filter)
+        );
+        if (index !== -1) {
+          docs.splice(index, 1);
+          nRemoved++;
+        }
+      }
+    }
+
+    await writeJSON(this.collectionPath, docs);
+    return { nModified, nInserted, nUpserted, nRemoved };
+  }
+
+  castObject(obj) {
+    const castedObj = {};
+    for (const [path, value] of Object.entries(obj)) {
+      const schemaType = this.schema.path(path);
+      if (schemaType) {
+        castedObj[path] = schemaType.cast(value);
+      } else {
+        castedObj[path] = value;
+      }
+    }
+    return castedObj;
+  }
+
+  async cleanIndexes() {
+    this._indexes.clear();
+    return true;
+  }
+
+  async countDocuments(conditions = {}) {
+    const docs = await this._find(conditions);
+    return docs.length;
+  }
+
+  async createCollection() {
+    await this._initializeCollection();
+    return this.collection;
+  }
+
+  async createIndexes(indexes = []) {
+    for (const [fields, options] of indexes) {
+      this._indexes.set(
+        Object.keys(fields).sort().join('_'),
+        { fields, options }
+      );
+    }
+    return indexes.length;
+  }
+
+  async createSearchIndex(options = {}) {
+    this._searchIndexes.set(options.name || 'default', options);
+    return true;
+  }
+
+  async diffIndexes() {
+    return {
+      toDrop: [],
+      toCreate: Array.from(this._indexes.values())
+    };
+  }
+
+  discriminator(name, schema) {
+    if (!this.discriminators) {
+      this.discriminators = {};
+    }
+    this.discriminators[name] = new Model(name, schema, this.connection);
+    return this.discriminators[name];
+  }
+
+  async distinct(field, conditions = {}) {
+    const docs = await this._find(conditions);
+    return [...new Set(docs.map(doc => doc[field]))];
+  }
+
+  async dropSearchIndex(name = 'default') {
+    return this._searchIndexes.delete(name);
+  }
+
+  async ensureIndexes() {
+    return this.createIndexes(Array.from(this._indexes.values()));
+  }
+
+  async estimatedDocumentCount() {
+    const docs = await readJSON(this.collectionPath);
+    return docs.length;
+  }
+
+  async exists(conditions) {
+    const doc = await this.findOne(conditions);
+    return doc !== null;
+  }
+
+  async findById(id) {
+    return this.findOne({ _id: id });
+  }
+
+  async findByIdAndDelete(id) {
+    return this.findOneAndDelete({ _id: id });
+  }
+
+  async findByIdAndUpdate(id, update, options = {}) {
+    return this.findOneAndUpdate({ _id: id }, update, options);
+  }
+
+  async findOneAndDelete(conditions) {
+    const doc = await this.findOne(conditions);
+    if (doc) {
+      await this.deleteOne(conditions);
+    }
+    return doc;
+  }
+
+  async findOneAndReplace(conditions, replacement, options = {}) {
+    const doc = await this.findOne(conditions);
+    if (doc) {
+      Object.assign(doc, replacement);
+      await doc.save();
+    } else if (options.upsert) {
+      return this.create(replacement);
+    }
+    return doc;
+  }
+
+  async findOneAndUpdate(conditions, update, options = {}) {
+    const doc = await this.findOne(conditions);
+    if (doc) {
+      Object.assign(doc, update);
+      await doc.save();
+    } else if (options.upsert) {
+      return this.create({ ...conditions, ...update });
+    }
+    return doc;
+  }
+
+  hydrate(obj) {
+    return new Document(obj, this.schema, this);
+  }
+
+  async init() {
+    await this._initializeCollection();
+    return this;
+  }
+
+  async insertMany(docs, options = {}) {
+    return this.create(docs, options);
+  }
+
+  inspect() {
+    return `Model { ${this.modelName} }`;
+  }
+
+  async listIndexes() {
+    return Array.from(this._indexes.values());
+  }
+
+  async listSearchIndexes() {
+    return Array.from(this._searchIndexes.values());
+  }
+
+  $model(name) {
+    return this.db.model(name);
+  }
+
+  async recompileSchema() {
+    this.schema._init();
+    return this;
+  }
+
+  async replaceOne(conditions, doc, options = {}) {
+    const result = await this.updateOne(
+      conditions,
+      doc,
+      { ...options, overwrite: true }
+    );
+    return result;
+  }
+
+  startSession() {
+    throw new Error('Sessions are not supported in file-based storage');
+  }
+
+  async syncIndexes() {
+    await this.cleanIndexes();
+    await this.ensureIndexes();
+    return this._indexes.size;
+  }
+
+  translateAliases(raw) {
+    const translated = { ...raw };
+    for (const [alias, path] of Object.entries(this.schema.aliases || {})) {
+      if (translated[alias] !== undefined) {
+        translated[path] = translated[alias];
+        delete translated[alias];
+      }
+    }
+    return translated;
+  }
+
+  async updateSearchIndex(options = {}) {
+    const name = options.name || 'default';
+    if (this._searchIndexes.has(name)) {
+      this._searchIndexes.set(name, {
+        ...this._searchIndexes.get(name),
+        ...options
+      });
+      return true;
+    }
+    return false;
+  }
+
+  async validate(obj) {
+    return this.schema.validate(obj);
+  }
+
+  watch() {
+    throw new Error('Watch is not supported in file-based storage');
+  }
+
+  where(path) {
+    return new Query(this).where(path);
+  }
+
 }
 
 module.exports = { Model };
