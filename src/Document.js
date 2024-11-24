@@ -10,6 +10,17 @@ class Document {
     this._parent = null;
     this._isNew = true;
     this._snapshot = null;
+    this._session = null;
+    this._locals = {};
+    this._op = null;
+    this._where = {};
+    this._timestamps = true;
+    this._deleted = false;
+    this._errors = {};
+    this._validationError = null;
+    this._selected = new Set(Object.keys(obj));
+    this._init = new Set();
+    
     this.isNew = true;
     this.errors = {};
     this.id = obj._id;
@@ -49,61 +60,6 @@ class Document {
     });
   }
 
-  get(path) {
-    return this._doc[path];
-  }
-
-  set(path, value) {
-    this._doc[path] = value;
-    this._modifiedPaths.add(path);
-    return this;
-  }
-
-  async save() {
-    if (this._schema.middleware.pre.save) {
-      for (const middleware of this._schema.middleware.pre.save) {
-        await middleware.call(this);
-      }
-    }
-
-    const result = await this._model.updateOne(
-      { _id: this._id },
-      this._doc
-    );
-
-    if (this._schema.middleware.post.save) {
-      for (const middleware of this._schema.middleware.post.save) {
-        await middleware.call(this);
-      }
-    }
-
-    return result;
-  }
-
-  toObject(options = {}) {
-    const obj = { ...this._doc };
-    
-    // Handle populated fields
-    for (const [path, value] of this._populated.entries()) {
-      if (value instanceof Document) {
-        obj[path] = value.toObject(options);
-      } else {
-        obj[path] = value;
-      }
-    }
-
-    return obj;
-  }
-
-  toJSON() {
-    return this.toObject();
-  }
-
-  markModified(path) {
-    this._modifiedPaths.add(path);
-    return this;
-  }
-
   $assertPopulated(path, values) {
     if (!this._populated.has(path)) {
       throw new Error(`Path '${path}' is not populated`);
@@ -111,16 +67,22 @@ class Document {
     return this;
   }
 
+  $clearModifiedPaths() {
+    this._modifiedPaths.clear();
+    return this;
+  }
+
+  $clone() {
+    return new Document({ ...this._doc }, this._schema, this._model);
+  }
+
   $createModifiedPathsSnapshot() {
     this._snapshot = new Set(this._modifiedPaths);
     return this;
   }
 
-  $restoreModifiedPathsSnapshot() {
-    if (this._snapshot) {
-      this._modifiedPaths = new Set(this._snapshot);
-    }
-    return this;
+  get $errors() {
+    return this._errors;
   }
 
   $getAllSubdocs() {
@@ -141,25 +103,129 @@ class Document {
   }
 
   $getPopulatedDocs() {
-    return Array.from(this._populated.entries()).map(([path, options]) => ({
+    return Array.from(this._populated.entries()).map(([path, doc]) => ({
       path,
-      options
+      doc
     }));
+  }
+
+  $ignore(path) {
+    this._modifiedPaths.delete(path);
+    return this;
+  }
+
+  $inc(path, val = 1) {
+    const curVal = this.get(path) || 0;
+    return this.set(path, curVal + val);
   }
 
   $init(obj) {
     Object.assign(this._doc, obj);
     this._modifiedPaths.clear();
     this._isNew = false;
+    Object.keys(obj).forEach(key => this._init.add(key));
     return this;
   }
 
   $isDefault(path) {
     const schemaType = this._schema.path(path);
-    if (!schemaType) return false;
-    
-    const value = this.get(path);
-    return value === schemaType.getDefault();
+    return schemaType ? this.get(path) === schemaType.getDefault() : false;
+  }
+
+  $isDeleted() {
+    return this._deleted;
+  }
+
+  $isEmpty(path) {
+    const val = this.get(path);
+    return val == null || val === '' || 
+           (Array.isArray(val) && val.length === 0) ||
+           (typeof val === 'object' && Object.keys(val).length === 0);
+  }
+
+  $isModified(path) {
+    return path ? this._modifiedPaths.has(path) : this._modifiedPaths.size > 0;
+  }
+
+  get $isNew() {
+    return this._isNew;
+  }
+
+  get $locals() {
+    return this._locals;
+  }
+
+  $markValid(path) {
+    delete this._errors[path];
+    return this;
+  }
+
+  get $op() {
+    return this._op;
+  }
+
+  $parent() {
+    return this._parent;
+  }
+
+  $populated(path) {
+    return this._populated.get(path);
+  }
+
+  $restoreModifiedPathsSnapshot() {
+    if (this._snapshot) {
+      this._modifiedPaths = new Set(this._snapshot);
+    }
+    return this;
+  }
+
+  $session(session = null) {
+    if (arguments.length === 0) return this._session;
+    this._session = session;
+    return this;
+  }
+
+  $set(path, val) {
+    return this.set(path, val);
+  }
+
+  $timestamps(value = true) {
+    this._timestamps = value;
+    return this;
+  }
+
+  async $validate(pathsToValidate) {
+    const paths = pathsToValidate || Array.from(this._modifiedPaths);
+    const errors = await Promise.all(
+      paths.map(path => this._validatePath(path))
+    );
+    return errors.filter(Boolean);
+  }
+
+  get $where() {
+    return this._where;
+  }
+
+  depopulate(path) {
+    if (path) {
+      this._populated.delete(path);
+    } else {
+      this._populated.clear();
+    }
+    return this;
+  }
+
+  directModifiedPaths() {
+    return Array.from(this._modifiedPaths);
+  }
+
+  equals(doc) {
+    return doc instanceof Document && 
+           this._id.toString() === doc._id.toString();
+  }
+
+  get(path) {
+    return this._doc[path];
   }
 
   getChanges() {
@@ -170,21 +236,197 @@ class Document {
     return changes;
   }
 
+  init(obj) {
+    return this.$init(obj);
+  }
+
+  inspect() {
+    return this.toObject();
+  }
+
+  invalidate(path, err) {
+    this._errors[path] = err;
+    return this;
+  }
+
+  isDirectModified(path) {
+    return this._modifiedPaths.has(path);
+  }
+
   isDirectSelected(path) {
-    return path in this._doc;
+    return this._selected.has(path);
+  }
+
+  isInit(path) {
+    return this._init.has(path);
+  }
+
+  isModified(path) {
+    return this.$isModified(path);
   }
 
   isSelected(path) {
-    if (this._schema.options.selectAll) return true;
-    return this.isDirectSelected(path);
+    return this._selected.has(path);
+  }
+
+  markModified(path) {
+    this._modifiedPaths.add(path);
+    return this;
+  }
+
+  modifiedPaths() {
+    return Array.from(this._modifiedPaths);
+  }
+
+  overwrite(obj) {
+    this._doc = { _id: this._id, ...obj };
+    this._modifiedPaths = new Set(Object.keys(obj));
+    return this;
   }
 
   parent() {
     return this._parent;
   }
 
+  async populate(path, select) {
+    if (typeof path === 'string') {
+      const schemaType = this._schema.path(path);
+      if (schemaType && schemaType.options.ref) {
+        const refModel = this._model.db.models[schemaType.options.ref];
+        if (!refModel) return this;
+
+        const value = this.get(path);
+        if (!value) return this;
+
+        try {
+          const populatedDoc = await refModel.findOne({ _id: value });
+          if (populatedDoc) {
+            this._populated.set(path, populatedDoc);
+          }
+        } catch (error) {
+          console.error(`Error populating ${path}:`, error);
+        }
+      }
+    }
+    return this;
+  }
+
+  populated(path) {
+    return this.$populated(path);
+  }
+
   replaceOne(replacement, options = {}) {
     return this._model.replaceOne({ _id: this._id }, replacement, options);
+  }
+
+  async save() {
+    if (this._timestamps) {
+      this._doc.updatedAt = new Date();
+      if (this.isNew) {
+        this._doc.createdAt = new Date();
+      }
+    }
+
+    if (this._schema.middleware.pre.save) {
+      for (const middleware of this._schema.middleware.pre.save) {
+        await middleware.call(this);
+      }
+    }
+
+    const errors = await this.$validate();
+    if (errors.length > 0) {
+      throw new Error(errors.join(', '));
+    }
+
+    const result = await this._model.updateOne(
+      { _id: this._id },
+      this._doc
+    );
+
+    if (this._schema.middleware.post.save) {
+      for (const middleware of this._schema.middleware.post.save) {
+        await middleware.call(this);
+      }
+    }
+
+    this._isNew = false;
+    return result;
+  }
+
+  get schema() {
+    return this._schema;
+  }
+
+  set(path, val) {
+    if (typeof path === 'string') {
+      this._doc[path] = val;
+      this._modifiedPaths.add(path);
+    } else if (typeof path === 'object') {
+      Object.entries(path).forEach(([key, value]) => {
+        this._doc[key] = value;
+        this._modifiedPaths.add(key);
+      });
+    }
+    return this;
+  }
+
+  toJSON() {
+    return this.toObject();
+  }
+
+  toObject(options = {}) {
+    const obj = { ...this._doc };
+    
+    // Handle populated fields
+    for (const [path, value] of this._populated.entries()) {
+      if (value instanceof Document) {
+        obj[path] = value.toObject(options);
+      } else {
+        obj[path] = value;
+      }
+    }
+
+    return obj;
+  }
+
+  toString() {
+    return `Document { _id: ${this._id} }`;
+  }
+
+  unmarkModified(path) {
+    this._modifiedPaths.delete(path);
+    return this;
+  }
+
+  updateOne(update, options = {}) {
+    return this._model.updateOne({ _id: this._id }, update, options);
+  }
+
+  async validate(pathsToValidate) {
+    return this.$validate(pathsToValidate);
+  }
+
+  validateSync(pathsToValidate) {
+    const paths = pathsToValidate || Array.from(this._modifiedPaths);
+    return paths.map(path => this._validatePath(path))
+               .filter(Boolean);
+  }
+
+  async _validatePath(path) {
+    const schemaType = this._schema.path(path);
+    if (!schemaType) return null;
+
+    const value = this.get(path);
+    return new Promise((resolve) => {
+      schemaType.doValidate(value, (error) => {
+        if (error) {
+          this._errors[path] = error;
+          resolve(error);
+        } else {
+          resolve(null);
+        }
+      }, this);
+    });
   }
 }
 

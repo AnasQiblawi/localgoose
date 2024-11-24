@@ -14,6 +14,10 @@ A lightweight, file-based ODM (Object-Document Mapper) for Node.js, inspired by 
 - 🔗 Support for related models and references
 - 📝 Comprehensive CRUD operations
 - 🔍 Advanced querying and filtering
+- 🔎 Full-text search capabilities
+- 📑 Compound indexing support
+- 🔄 Schema inheritance and discrimination
+- 🎨 Custom type casting and validation
 
 ## Installation
 
@@ -102,6 +106,11 @@ const schema = new localgoose.Schema({
   boolean: { type: Boolean },
   date: { type: Date, default: Date.now },
   objectId: { type: localgoose.Schema.Types.ObjectId, ref: 'OtherModel' },
+  buffer: localgoose.Schema.Types.Buffer,
+  uuid: localgoose.Schema.Types.UUID,
+  bigInt: localgoose.Schema.Types.BigInt,
+  mixed: localgoose.Schema.Types.Mixed,
+  map: localgoose.Schema.Types.Map,
   
   // Arrays and Objects
   array: { type: Array, default: [] },
@@ -136,6 +145,10 @@ schema.pre('save', function() {
 schema.post('save', function() {
   console.log('Document saved:', this._id);
 });
+
+// Indexes
+schema.index({ email: 1 }, { unique: true });
+schema.index({ title: 'text', content: 'text' });
 ```
 
 ### Model Operations
@@ -223,6 +236,21 @@ const docs = await Model.find()
   .skip(10)
   .limit(5)
   .populate('reference')
+  .exec();
+
+// Advanced queries with geospatial support
+const docs = await Model.find()
+  .where('location')
+  .near({
+    center: [longitude, latitude],
+    maxDistance: 5000
+  })
+  .exec();
+
+// Text search
+const docs = await Model.find()
+  .where('$text')
+  .equals({ $search: 'keyword' })
   .exec();
 ```
 
