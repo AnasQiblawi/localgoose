@@ -14,6 +14,7 @@ class SchemaType {
     this._text = false;
     this._unique = false;
     this._immutable = false;
+    this._embedded = null;
 
     if (options.required) {
       this.required(options.required);
@@ -50,6 +51,22 @@ class SchemaType {
     if (options.immutable) {
       this.immutable(options.immutable);
     }
+
+    if (options.sparse) {
+      this.sparse(options.sparse);
+    }
+
+    if (options.unique) {
+      this.unique(options.unique);
+    }
+
+    if (options.text) {
+      this.text(options.text);
+    }
+
+    if (options.index) {
+      this.index(options.index);
+    }
   }
 
   static cast(val) {
@@ -61,14 +78,14 @@ class SchemaType {
   }
 
   static get(fn) {
-    this._defaultGetters = this._defaultGetters || [];
-    this._defaultGetters.push(fn);
+    if (!this._getters) this._getters = [];
+    this._getters.push(fn);
     return this;
   }
 
   static set(fn) {
-    this._defaultSetters = this._defaultSetters || [];
-    this._defaultSetters.push(fn);
+    if (!this._setters) this._setters = [];
+    this._setters.push(fn);
     return this;
   }
 
@@ -78,6 +95,15 @@ class SchemaType {
     }
 
     let value = val;
+    
+    // Apply static casts first
+    if (this.constructor._setters) {
+      for (const setter of this.constructor._setters) {
+        value = setter(value);
+      }
+    }
+
+    // Apply instance casts
     for (const setter of this.setters) {
       value = setter(value);
     }
@@ -103,7 +129,7 @@ class SchemaType {
     return this;
   }
 
-  doValidate(value, fn, context) {
+  async doValidate(value, fn, context) {
     let err = null;
     const validatorCount = this.validators.length;
 
@@ -112,29 +138,30 @@ class SchemaType {
     }
 
     let validatorsCompleted = 0;
-    for (const validator of this.validators) {
-      const validatorWrapper = (ok) => {
-        validatorsCompleted++;
-        if (ok === false && !err) {
-          err = new Error(validator.message || `Validation failed for path \`${this.path}\``);
-        }
-        if (validatorsCompleted === validatorCount) {
-          fn(err);
-        }
-      };
+    
+    const handleValidationResult = (ok) => {
+      validatorsCompleted++;
+      if (ok === false && !err) {
+        err = new Error(`Validation failed for path \`${this.path}\``);
+      }
+      if (validatorsCompleted === validatorCount) {
+        fn(err);
+      }
+    };
 
+    for (const validator of this.validators) {
       try {
         const result = validator.validator.call(context, value);
         if (result && typeof result.then === 'function') {
-          result.then(
-            ok => validatorWrapper(ok),
-            error => validatorWrapper(false)
+          await result.then(
+            ok => handleValidationResult(ok),
+            error => handleValidationResult(false)
           );
         } else {
-          validatorWrapper(result);
+          handleValidationResult(result);
         }
       } catch (error) {
-        validatorWrapper(false);
+        handleValidationResult(false);
       }
     }
   }
@@ -152,7 +179,7 @@ class SchemaType {
   }
 
   getEmbeddedSchemaType() {
-    return null;
+    return this._embedded;
   }
 
   immutable(value = true) {
@@ -174,18 +201,26 @@ class SchemaType {
     return this;
   }
 
-  required(required) {
+  required(required = true, message) {
     if (arguments.length === 0) {
       return this.validators.some(v => v.isRequired);
     }
 
     if (required) {
-      this.validators = [{
+      const validator = {
         validator: v => v != null,
-        message: `Path \`${this.path}\` is required.`,
+        message: message || `Path \`${this.path}\` is required.`,
         type: 'required',
         isRequired: true
-      }, ...this.validators];
+      };
+
+      // Remove any existing required validators
+      this.validators = this.validators.filter(v => !v.isRequired);
+      // Add new required validator at the beginning
+      this.validators.unshift(validator);
+    } else {
+      // Remove all required validators
+      this.validators = this.validators.filter(v => !v.isRequired);
     }
 
     return this;
@@ -221,20 +256,28 @@ class SchemaType {
     return this;
   }
 
-  validate(obj) {
+  validate(obj, message) {
     if (obj == null) {
       return this;
     }
 
-    if (typeof obj === 'function' || obj.validator) {
-      this.validators.push(this._createValidator(obj));
-    }
-
+    const validator = this._createValidator(obj, message);
+    this.validators.push(validator);
     return this;
   }
 
-  validateAll() {
-    return Promise.all(this.validators.map(v => v.validator()));
+  async validateAll() {
+    const results = await Promise.all(
+      this.validators.map(validator => {
+        try {
+          const result = validator.validator();
+          return Promise.resolve(result);
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      })
+    );
+    return results.every(result => result === true);
   }
 
   get validators() {
@@ -245,19 +288,24 @@ class SchemaType {
     this._validators = v;
   }
 
-  _createValidator(obj) {
+  _createValidator(obj, message) {
     if (typeof obj === 'function') {
       return {
         validator: obj,
-        message: `Validation failed for path \`${this.path}\``
+        message: message || `Validation failed for path \`${this.path}\``,
+        type: 'user defined'
       };
     }
 
-    return {
-      validator: obj.validator,
-      message: obj.message || `Validation failed for path \`${this.path}\``,
-      type: obj.type
-    };
+    if (obj.validator) {
+      return {
+        validator: obj.validator,
+        message: obj.message || message || `Validation failed for path \`${this.path}\``,
+        type: obj.type || 'user defined'
+      };
+    }
+
+    throw new Error('Invalid validator. Validator must be a function or an object with a validator function');
   }
 }
 
