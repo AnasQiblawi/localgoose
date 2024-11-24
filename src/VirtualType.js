@@ -1,4 +1,4 @@
-export class VirtualType {
+class VirtualType {
   constructor(options = {}) {
     this.path = options.path;
     this.getters = [];
@@ -68,3 +68,5 @@ export class VirtualType {
     return this;
   }
 }
+
+module.exports = { VirtualType };

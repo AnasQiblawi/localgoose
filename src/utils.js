@@ -1,7 +1,7 @@
-import fs from 'fs/promises';
-import path from 'path';
+const fs = require('fs/promises');
+const path = require('path');
 
-export async function readJSON(filePath) {
+async function readJSON(filePath) {
   try {
     const data = await fs.readFile(filePath, 'utf8');
     
@@ -30,7 +30,7 @@ export async function readJSON(filePath) {
   }
 }
 
-export async function writeJSON(filePath, data) {
+async function writeJSON(filePath, data) {
   try {
     const jsonString = JSON.stringify(data, (key, value) => {
       if (value instanceof Date) {
@@ -44,7 +44,7 @@ export async function writeJSON(filePath, data) {
   }
 }
 
-export function validateType(value, type) {
+function validateType(value, type) {
   if (value === undefined || value === null) return false;
   if (type === String) return typeof value === 'string';
   if (type === Number) return typeof value === 'number' && !isNaN(value);
@@ -55,7 +55,7 @@ export function validateType(value, type) {
   return true;
 }
 
-export function formatOutput(obj, seen = new WeakSet()) {
+function formatOutput(obj, seen = new WeakSet()) {
   if (obj === null || typeof obj !== 'object') {
     return obj;
   }
@@ -85,3 +85,10 @@ export function formatOutput(obj, seen = new WeakSet()) {
 
   return formatted;
 }
+
+module.exports = {
+  readJSON,
+  writeJSON,
+  validateType,
+  formatOutput
+};

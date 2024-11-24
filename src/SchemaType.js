@@ -1,4 +1,4 @@
-export class SchemaType {
+class SchemaType {
   constructor(path, options = {}, instance) {
     this.path = path;
     this.instance = instance;
@@ -260,3 +260,5 @@ export class SchemaType {
     };
   }
 }
+
+module.exports = { SchemaType };

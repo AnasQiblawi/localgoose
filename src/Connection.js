@@ -1,9 +1,9 @@
-import fs from 'fs/promises';
-import path from 'path';
-import { Model } from './Model.js';
-import { EventEmitter } from 'events';
+const fs = require('fs/promises');
+const path = require('path');
+const { Model } = require('./Model.js');
+const { EventEmitter } = require('events');
 
-export class Connection {
+class Connection {
   constructor(dbPath = './db') {
     this.dbPath = dbPath;
     this.models = {};
@@ -174,3 +174,5 @@ export class Connection {
     this.readyState = 0;
   }
 }
+
+module.exports = { Connection };

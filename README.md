@@ -24,7 +24,7 @@ npm install localgoose
 ## Quick Start
 
 ```javascript
-import { localgoose } from 'localgoose';
+const { localgoose } = require('localgoose');
 
 // Connect to a local directory for storage
 const db = await localgoose.connect('./mydb');

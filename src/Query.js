@@ -1,8 +1,8 @@
-import { validateType } from './utils.js';
-import { QueryBuilder } from './QueryBuilder.js';
-import { Document } from './Document.js';
+const { validateType } = require('./utils.js');
+const { QueryBuilder } = require('./QueryBuilder.js');
+const { Document } = require('./Document.js');
 
-export class Query {
+class Query {
   constructor(model, conditions = {}) {
     this.model = model;
     this.conditions = conditions;
@@ -135,7 +135,6 @@ export class Query {
     return documents;
   }
 
-  // Rest of the Query class methods remain the same...
   box(path, box) {
     this._geometry = { type: 'box', path, coordinates: box };
     return this;
@@ -246,3 +245,5 @@ export class Query {
     return this;
   }
 }
+
+module.exports = { Query };

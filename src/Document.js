@@ -1,6 +1,6 @@
-import { EventEmitter } from 'events';
+const { EventEmitter } = require('events');
 
-export class Document {
+class Document {
   constructor(obj, schema, model) {
     this._doc = { ...obj };
     this._schema = schema;
@@ -187,3 +187,5 @@ export class Document {
     return this._model.replaceOne({ _id: this._id }, replacement, options);
   }
 }
+
+module.exports = { Document };

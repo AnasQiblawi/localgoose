@@ -1,4 +1,4 @@
-import { localgoose } from "./src/index.js";
+const { localgoose } = require("./src/index.js");
 
 const logOutput = (label, data) => {
   console.log(`\n${label}`);

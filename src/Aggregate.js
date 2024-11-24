@@ -1,4 +1,4 @@
-export class Aggregate {
+class Aggregate {
   constructor(model, pipeline = []) {
     this.model = model;
     this.pipeline = [...pipeline];
@@ -186,3 +186,5 @@ export class Aggregate {
     }
   }
 }
+
+module.exports = { Aggregate };

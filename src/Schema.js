@@ -1,8 +1,8 @@
-import { SchemaType } from './SchemaType.js';
-import { VirtualType } from './VirtualType.js';
-import { ObjectId } from 'bson';
+const { SchemaType } = require('./SchemaType.js');
+const { VirtualType } = require('./VirtualType.js');
+const { ObjectId } = require('bson');
 
-export class Schema {
+class Schema {
   constructor(definition, options = {}) {
     this.definition = this._parseDefinition(definition);
     this.options = options;
@@ -313,3 +313,5 @@ export class Schema {
     return errors;
   }
 }
+
+module.exports = { Schema };

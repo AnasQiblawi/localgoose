@@ -1,13 +1,13 @@
-import { readJSON, writeJSON } from './utils.js';
-import { ObjectId } from 'bson';
-import path from 'path';
-import { Query } from './Query.js';
-import { Aggregate } from './Aggregate.js';
-import { Document } from './Document.js';
-import { EventEmitter } from 'events';
-import fs from 'fs-extra';
+const { readJSON, writeJSON } = require('./utils.js');
+const { ObjectId } = require('bson');
+const path = require('path');
+const { Query } = require('./Query.js');
+const { Aggregate } = require('./Aggregate.js');
+const { Document } = require('./Document.js');
+const { EventEmitter } = require('events');
+const fs = require('fs-extra');
 
-export class Model {
+class Model {
   constructor(name, schema, connection) {
     this.name = name;
     this.schema = schema;
@@ -166,3 +166,5 @@ export class Model {
     return new Aggregate(this, pipeline);
   }
 }
+
+module.exports = { Model };

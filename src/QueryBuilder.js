@@ -1,4 +1,4 @@
-export class QueryBuilder {
+class QueryBuilder {
   constructor(query, path) {
     this.query = query;
     this.path = path;
@@ -49,3 +49,5 @@ export class QueryBuilder {
     return this.query;
   }
 }
+
+module.exports = { QueryBuilder };

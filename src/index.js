@@ -1,8 +1,6 @@
-// Import necessary modules
-import { Schema } from './Schema.js';
-import { Connection } from './Connection.js';
+const { Schema } = require('./Schema.js');
+const { Connection } = require('./Connection.js');
 
-// Define the localgoose object
 const localgoose = {
   Schema,
   Connection,
@@ -13,5 +11,4 @@ const localgoose = {
   }
 };
 
-// export default localgoose;
-export { localgoose };
+module.exports = { localgoose };
