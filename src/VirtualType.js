@@ -10,30 +10,59 @@ class VirtualType {
     this._justOne = false;
     this._count = false;
     this._match = null;
+    this._defaultValue = undefined;
   }
 
   applyGetters(value, doc) {
-    let val = value;
-    for (const getter of this.getters) {
-      val = getter.call(doc, val);
+    if (!doc) {
+      throw new Error('Document is required to apply getters');
     }
+
+    let val = value;
+    
+    // Apply each getter in sequence
+    for (const getter of this.getters) {
+      try {
+        val = getter.call(doc, val, this);
+      } catch (error) {
+        throw new Error(`Error applying getter for path "${this.path}": ${error.message}`);
+      }
+    }
+
     return val;
   }
 
   applySetters(value, doc) {
-    let val = value;
-    for (const setter of this.setters) {
-      val = setter.call(doc, val);
+    if (!doc) {
+      throw new Error('Document is required to apply setters');
     }
+
+    let val = value;
+    
+    // Apply each setter in sequence
+    for (const setter of this.setters) {
+      try {
+        val = setter.call(doc, val, this);
+      } catch (error) {
+        throw new Error(`Error applying setter for path "${this.path}": ${error.message}`);
+      }
+    }
+
     return val;
   }
 
   get(fn) {
+    if (typeof fn !== 'function') {
+      throw new Error('Getter must be a function');
+    }
     this.getters.push(fn);
     return this;
   }
 
   set(fn) {
+    if (typeof fn !== 'function') {
+      throw new Error('Setter must be a function');
+    }
     this.setters.push(fn);
     return this;
   }
@@ -66,6 +95,25 @@ class VirtualType {
   match(val) {
     this._match = val;
     return this;
+  }
+
+  default(val) {
+    this._defaultValue = val;
+    return this;
+  }
+
+  clone() {
+    const clone = new VirtualType(this.options);
+    clone.getters = [...this.getters];
+    clone.setters = [...this.setters];
+    clone._ref = this._ref;
+    clone._localField = this._localField;
+    clone._foreignField = this._foreignField;
+    clone._justOne = this._justOne;
+    clone._count = this._count;
+    clone._match = this._match;
+    clone._defaultValue = this._defaultValue;
+    return clone;
   }
 }
 
