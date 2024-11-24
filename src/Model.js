@@ -27,6 +27,7 @@ class Model {
     this.modelName = name;
     this.baseModelName = null;
     this._indexes = new Map();
+    this._searchIndexes = new Map();
     
     this._initializeCollection();
     
@@ -376,6 +377,19 @@ class Model {
     }
     return doc;
   }
+
+  async deleteOne(conditions = {}) {
+    const docs = await readJSON(this.collectionPath);
+    const index = docs.findIndex(doc => this._matchQuery(doc, conditions));
+  
+    if (index !== -1) {
+      docs.splice(index, 1);
+      await writeJSON(this.collectionPath, docs);
+      return { deletedCount: 1 };
+    }
+  
+    return { deletedCount: 0 };
+  }  
 
   hydrate(obj) {
     return new Document(obj, this.schema, this);
