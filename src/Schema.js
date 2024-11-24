@@ -20,15 +20,39 @@ class Schema {
     this.childSchemas = [];
     this.discriminatorMapping = null;
     this.obj = { ...definition };
+    this._searchIndexes = new Map();
 
-    this.reserved = {
+    this.reserved = Schema.reserved;
+
+    this._init();
+  }
+
+  static get reserved() {
+    return {
       _id: true,
       __v: true,
       createdAt: true,
-      updatedAt: true
+      updatedAt: true,
+      collection: true,
+      emit: true,
+      errors: true,
+      get: true,
+      init: true,
+      isModified: true,
+      isNew: true,
+      listeners: true,
+      modelName: true,
+      on: true,
+      once: true,
+      populated: true,
+      remove: true,
+      removeListener: true,
+      save: true,
+      schema: true,
+      set: true,
+      toObject: true,
+      validate: true
     };
-
-    this._init();
   }
 
   static get Types() {
@@ -42,12 +66,15 @@ class Schema {
       ObjectId: ObjectId,
       Mixed: Object,
       Decimal128: Number,
-      Map: Map
+      Map: Map,
+      Buffer: Buffer,
+      UUID: String,
+      BigInt: BigInt
     };
   }
 
   static get indexTypes() {
-    return ['2d', '2dsphere', 'hashed', 'text', 'unique'];
+    return ['2d', '2dsphere', 'hashed', 'text', 'unique', 'sparse', 'compound'];
   }
 
   _parseDefinition(definition) {
@@ -99,6 +126,11 @@ class Schema {
     return this;
   }
 
+  clearIndexes() {
+    this._indexes = [];
+    return this;
+  }
+
   clone() {
     const clone = new Schema(this.definition, { ...this.options });
     clone.virtuals = { ...this.virtuals };
@@ -111,6 +143,7 @@ class Schema {
     clone._indexes = [...this._indexes];
     clone._plugins = new Set([...this._plugins]);
     clone.childSchemas = [...this.childSchemas];
+    clone._searchIndexes = new Map(this._searchIndexes);
     return clone;
   }
 
@@ -260,6 +293,17 @@ class Schema {
     return Array.from(this._requiredPaths);
   }
 
+  searchIndex(options = {}) {
+    const index = {
+      weights: options.weights || {},
+      name: options.name,
+      default_language: options.default_language || 'english',
+      language_override: options.language_override || 'language'
+    };
+    this._searchIndexes.set(options.name || 'default', index);
+    return this;
+  }
+
   set(key, value) {
     this.options[key] = value;
     return this;
@@ -272,7 +316,7 @@ class Schema {
 
   virtual(name) {
     if (!this.virtuals[name]) {
-      this.virtuals[name] = new VirtualType(name);
+      this.virtuals[name] = new VirtualType({ path: name });
     }
     return this.virtuals[name];
   }
