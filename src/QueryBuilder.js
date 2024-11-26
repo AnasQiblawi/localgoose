@@ -30,12 +30,16 @@ class QueryBuilder {
   }
 
   in(arr) {
-    this.query.conditions[this.path] = { $in: Array.isArray(arr) ? arr : [arr] };
+    this.query.conditions[this.path] = { 
+      $in: Array.isArray(arr) ? arr : [arr] 
+    };
     return this.query;
   }
 
   nin(arr) {
-    this.query.conditions[this.path] = { $nin: Array.isArray(arr) ? arr : [arr] };
+    this.query.conditions[this.path] = { 
+      $nin: Array.isArray(arr) ? arr : [arr] 
+    };
     return this.query;
   }
 
@@ -44,9 +48,49 @@ class QueryBuilder {
     return this.query;
   }
 
-  regex(pattern, options) {
-    this.query.conditions[this.path] = { $regex: pattern, $options: options };
+  regex(pattern, options = 'i') {
+    this.query.conditions[this.path] = { 
+      $regex: pattern, 
+      $options: options 
+    };
     return this.query;
+  }
+
+  ne(val) {
+    this.query.conditions[this.path] = { $ne: val };
+    return this.query;
+  }
+
+  mod(divisor, remainder) {
+    this.query.conditions[this.path] = { $mod: [divisor, remainder] };
+    return this.query;
+  }
+
+  size(val) {
+    this.query.conditions[this.path] = { $size: val };
+    return this.query;
+  }
+
+  type(val) {
+    this.query.conditions[this.path] = { $type: val };
+    return this.query;
+  }
+
+  // Geospatial query methods
+  near(coords, maxDistance) {
+    this.query.conditions[this.path] = { 
+      $near: coords, 
+      ...(maxDistance && { $maxDistance: maxDistance }) 
+    };
+    return this.query;
+  }
+
+  // Validation method to ensure query building is type-safe
+  validate() {
+    if (!this.path) {
+      throw new Error('Path must be specified before building query conditions');
+    }
+    return this;
   }
 }
 

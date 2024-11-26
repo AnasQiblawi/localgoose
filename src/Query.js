@@ -205,6 +205,10 @@ class Query {
   }
 
   exists(path, val = true) {
+    if (arguments.length === 1) {
+      val = path;
+      path = this._currentPath;
+    }
     this.conditions[path] = { $exists: val };
     return this;
   }
@@ -383,6 +387,11 @@ class Query {
   }
 
   mod(path, divisor, remainder) {
+    if (arguments.length === 2) {
+      remainder = divisor;
+      divisor = path;
+      path = this._currentPath;
+    }
     this.conditions[path] = { $mod: [divisor, remainder] };
     return this;
   }
@@ -480,12 +489,16 @@ class Query {
     return this;
   }
 
-  regex(path, val) {
-    if (arguments.length === 1) {
+  regex(path, val, options = 'i') {
+    if (arguments.length === 1 || typeof path === 'string' && arguments.length === 2) {
       val = path;
+      options = arguments.length === 2 ? val : 'i';
       path = this._currentPath;
     }
-    this.conditions[path] = { $regex: val };
+    this.conditions[path] = { 
+      $regex: val,
+      $options: options 
+    };
     return this;
   }
 
