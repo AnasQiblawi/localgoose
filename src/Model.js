@@ -479,6 +479,95 @@ class Model {
     return new Query(this).where(path);
   }
 
+  async backup(backupPath) {
+    const defaultBackupPath = path.join(
+      path.dirname(this.collectionPath), 
+      `${this.name}_backup_${new Date().toISOString().replace(/:/g, '-')}.json`
+    );
+    
+    const docs = await readJSON(this.collectionPath);
+    await writeJSON(backupPath || defaultBackupPath, docs);
+    return backupPath || defaultBackupPath;
+  }
+  
+  async restore(backupPath) {
+    if (!backupPath) {
+      // Find the most recent backup file if no path is provided
+      const backupDir = path.dirname(this.collectionPath);
+      const backupFiles = await fs.readdir(backupDir);
+      const modelBackupFiles = backupFiles.filter(file => 
+        file.startsWith(`${this.name}_backup_`) && file.endsWith('.json')
+      );
+      
+      if (modelBackupFiles.length === 0) {
+        throw new Error(`No backup files found for model: ${this.name}`);
+      }
+      
+      // Sort backup files and get the most recent one
+      const mostRecentBackup = modelBackupFiles.sort().reverse()[0];
+      backupPath = path.join(backupDir, mostRecentBackup);
+    }
+  
+    const backupDocs = await readJSON(backupPath);
+    await writeJSON(this.collectionPath, backupDocs);
+    return backupPath;
+  }
+  
+  async listBackups() {
+    try {
+      const backupDir = path.dirname(this.collectionPath);
+      const backupFiles = await fs.readdir(backupDir);
+      
+      // Filter backup files for this specific model
+      const modelBackups = backupFiles
+        .filter(file => 
+          file.startsWith(`${this.name}_backup_`) && 
+          file.endsWith('.json')
+        )
+        .map(filename => {
+          const fullPath = path.join(backupDir, filename);
+          const stats = fs.statSync(fullPath);
+          
+          return {
+            filename,
+            path: fullPath,
+            createdAt: stats.birthtime,
+            size: stats.size // in bytes
+          };
+        })
+        // Sort from most recent to oldest
+        .sort((a, b) => b.createdAt - a.createdAt);
+      
+      return modelBackups;
+    } catch (error) {
+      console.error('Error listing backups:', error);
+      return [];
+    }
+  }
+
+  async cleanupBackups(backedupFileName = null) {
+    const backups = await this.listBackups();
+  
+    if (backedupFileName) {
+      // Find and delete specific backup
+      const backupToDelete = backups.find(backup => backup.filename === backedupFileName);
+      
+      if (!backupToDelete) {
+        throw new Error(`Backup file '${backedupFileName}' not found`);
+      }
+  
+      await fs.unlink(backupToDelete.path);
+      return [backupToDelete];
+    }
+  
+    // Delete all backup files by default
+    for (const backup of backups) {
+      await fs.unlink(backup.path);
+    }
+  
+    return [];
+  }
+
 }
 
 module.exports = { Model };
