@@ -1,18 +1,29 @@
 const fs = require('fs/promises');
 const path = require('path');
 
-async function readJSON(filePath) {
+async function readJSON(filePath, options = {}) {
+  const { 
+    defaultValue = [], 
+    dateReviver = (value) => value instanceof Date ? value : new Date(value) 
+  } = options;
+
   try {
     const data = await fs.readFile(filePath, 'utf8');
     
     if (!data.trim()) {
-      await writeJSON(filePath, []);
-      return [];
+      await writeJSON(filePath, defaultValue);
+      return defaultValue;
     }
 
     return JSON.parse(data, (key, value) => {
-      if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z$/.test(value)) {
-        return new Date(value);
+      // Enhanced date parsing
+      if (typeof value === 'string' && 
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z$/.test(value)) {
+        try {
+          return dateReviver(value);
+        } catch {
+          return value;
+        }
       }
       return value;
     });
@@ -23,39 +34,79 @@ async function readJSON(filePath) {
       if (dirPath) {
         await fs.mkdir(dirPath, { recursive: true });
       }
-      await writeJSON(filePath, []);
-      return [];
+      await writeJSON(filePath, defaultValue);
+      return defaultValue;
     }
     throw error;
   }
 }
 
-async function writeJSON(filePath, data) {
+async function writeJSON(filePath, data, options = {}) {
+  const { 
+    spaces = 2, 
+    dateReplacer = (value) => value instanceof Date ? value.toISOString() : value 
+  } = options;
+
   try {
     const jsonString = JSON.stringify(data, (key, value) => {
+      // Enhanced date handling with custom replacer
       if (value instanceof Date) {
-        return value.toISOString();
+        return dateReplacer(value);
       }
       return value;
-    }, 2);
+    }, spaces);
     await fs.writeFile(filePath, jsonString, 'utf8');
   } catch (error) {
     throw new Error(`Failed to write to ${filePath}: ${error.message}`);
   }
 }
 
-function validateType(value, type) {
-  if (value === undefined || value === null) return false;
+function validateType(value, type, options = {}) {
+  const { 
+    coerce = false,
+    nullable = false 
+  } = options;
+
+  // Handle nullable option
+  if ((value === undefined || value === null)) {
+    return nullable;
+  }
+
+  // Type coercion support
+  if (coerce) {
+    if (type === String) return String(value);
+    if (type === Number) return Number(value);
+    if (type === Boolean) return Boolean(value);
+  }
+
+  // Enhanced type checking with custom class support
   if (type === String) return typeof value === 'string';
   if (type === Number) return typeof value === 'number' && !isNaN(value);
   if (type === Boolean) return typeof value === 'boolean';
   if (type === Date) return value instanceof Date || !isNaN(new Date(value).getTime());
   if (type === Array) return Array.isArray(value);
   if (type === Object) return typeof value === 'object' && !Array.isArray(value) && value !== null;
+  
+  // Custom class instance check
+  if (typeof type === 'function') {
+    return value instanceof type;
+  }
+
   return true;
 }
 
-function formatOutput(obj, seen = new WeakSet()) {
+function formatOutput(obj, options = {}) {
+  const { 
+    seen = new WeakSet(),
+    maxDepth = 10,
+    currentDepth = 0 
+  } = options;
+
+  // Depth and circular reference protection
+  if (currentDepth > maxDepth) {
+    return '[Max Depth Reached]';
+  }
+
   if (obj === null || typeof obj !== 'object') {
     return obj;
   }
@@ -64,10 +115,16 @@ function formatOutput(obj, seen = new WeakSet()) {
     return '[Circular]';
   }
 
-  seen.add(obj);
+  // Clone the seen set to prevent cross-branch pollution
+  const newSeen = new WeakSet(seen);
+  newSeen.add(obj);
 
   if (Array.isArray(obj)) {
-    return obj.map(item => formatOutput(item, seen));
+    return obj.map(item => formatOutput(item, {
+      seen: newSeen,
+      maxDepth,
+      currentDepth: currentDepth + 1
+    }));
   }
 
   const formatted = {};
@@ -76,7 +133,11 @@ function formatOutput(obj, seen = new WeakSet()) {
       if (value instanceof Date) {
         formatted[key] = value.toISOString();
       } else {
-        formatted[key] = formatOutput(value, seen);
+        formatted[key] = formatOutput(value, {
+          seen: newSeen,
+          maxDepth,
+          currentDepth: currentDepth + 1
+        });
       }
     } else {
       formatted[key] = value;
