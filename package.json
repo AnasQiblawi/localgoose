@@ -1,6 +1,6 @@
 {
   "name": "localgoose",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "A lightweight, file-based ODM Database for Node.js, inspired by Mongoose",
   "main": "src/index.js",
   "scripts": {
@@ -15,7 +15,14 @@
     "schema",
     "nodejs",
     "local-storage",
-    "file-based"
+    "file-based",
+    "document-database",
+    "nosql",
+    "json-storage",
+    "embedded-database",
+    "lightweight-database",
+    "file-system",
+    "local-db"
   ],
   "author": "",
   "license": "MIT",

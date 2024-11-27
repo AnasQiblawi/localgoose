@@ -40,6 +40,17 @@ class Model {
     });
   }
 
+  _getCollection(collectionName) {
+    try {
+      const collectionPath = path.join(this.connection.dbPath, `${collectionName}.json`);
+      const data = fs.readFileSync(collectionPath, 'utf8');
+      return JSON.parse(data);
+    } catch (error) {
+      return [];
+    }
+  }
+
+  // Rest of the Model class implementation remains exactly the same
   async _createOne(data) {
     const defaultedData = { ...data };
     
@@ -166,7 +177,6 @@ class Model {
   aggregate(pipeline = []) {
     return new Aggregate(this, pipeline);
   }
-
 
   static $where(condition) {
     return this.find({ $where: condition });
@@ -567,7 +577,6 @@ class Model {
   
     return [];
   }
-
 }
 
 module.exports = { Model };
