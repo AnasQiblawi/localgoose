@@ -154,12 +154,6 @@ const main = async () => {
     const Comment = db.model('Comment', commentSchema);
     const Category = db.model('Category', categorySchema);
 
-    // Clear existing data
-    await User.deleteMany({});
-    await Post.deleteMany({});
-    await Comment.deleteMany({});
-    await Category.deleteMany({});
-
     // Create users
     console.log('\n--- Creating Users ---');
     const john = await User.create({
@@ -325,6 +319,13 @@ const main = async () => {
       .sort({ totalLikes: -1 })
       .exec();
     logOutput('User post statistics:', userPostStats);
+
+    // Clean up: Delete all records before disconnecting
+    console.log('\n--- Cleaning up Database ---');
+    await User.deleteMany({});
+    await Post.deleteMany({});
+    await Comment.deleteMany({});
+    await Category.deleteMany({});
 
     // Clean up
     await db.disconnect();
