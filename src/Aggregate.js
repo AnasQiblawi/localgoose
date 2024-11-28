@@ -515,7 +515,75 @@ class Aggregate {
           return 0;
         });
       }
-
+  
+      case '$bucket': {
+        const { 
+          groupBy,      // Expression to group by
+          boundaries,   // Bucket boundaries
+          default: defaultBucket,  // Optional bucket for values outside boundaries
+          output = {}   // Optional output fields
+        } = operation;
+  
+        const buckets = {};
+  
+        docs.forEach(doc => {
+          // Evaluate the groupBy expression for the current document
+          const value = this._evaluateExpression(groupBy, doc);
+  
+          // Find the appropriate bucket
+          let bucketIndex = boundaries.findIndex(boundary => value < boundary);
+          
+          if (bucketIndex === -1) {
+            if (defaultBucket !== undefined) {
+              bucketIndex = 'default';
+            } else {
+              // Skip document if no suitable bucket and no default
+              return;
+            }
+          } else {
+            // Use the lower boundary as the bucket key
+            bucketIndex = bucketIndex > 0 ? boundaries[bucketIndex - 1] : 0;
+          }
+  
+          // Initialize bucket if it doesn't exist
+          if (!buckets[bucketIndex]) {
+            buckets[bucketIndex] = { 
+              _id: bucketIndex,
+              count: 0
+            };
+            
+            // Initialize output fields
+            for (const [field, accumulator] of Object.entries(output)) {
+              buckets[bucketIndex][field] = this._initializeAccumulator(accumulator);
+            }
+          }
+  
+          // Update count
+          buckets[bucketIndex].count++;
+  
+          // Update output fields
+          for (const [field, accumulator] of Object.entries(output)) {
+            this._updateAccumulator(
+              buckets[bucketIndex], 
+              field, 
+              accumulator, 
+              doc
+            );
+          }
+        });
+  
+        // Convert buckets object to array and handle averages
+        return Object.values(buckets).map(bucket => {
+          // Convert average accumulator to final value
+          for (const [field, value] of Object.entries(bucket)) {
+            if (typeof value === 'object' && value.sum !== undefined) {
+              bucket[field] = value.value || (value.sum / value.count);
+            }
+          }
+          return bucket;
+        });
+      }
+  
       default:
         return docs;
     }
