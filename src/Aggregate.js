@@ -93,6 +93,35 @@ class Aggregate {
     return this;
   }
 
+  count(fieldName = 'count') {
+    this.pipeline.push({ $count: fieldName });
+    return this;
+  }
+  
+  out(collection) {
+    this.pipeline.push({ $out: collection });
+    return this;
+  }
+  
+  merge(options) {
+    this.pipeline.push({ $merge: options });
+    return this;
+  }
+  
+  replaceRoot(newRoot) {
+    this.pipeline.push({ $replaceRoot: { newRoot } });
+    return this;
+  }
+  
+  set(fields) {
+    this.pipeline.push({ $set: fields });
+    return this;
+  }
+  
+  unset(fields) {
+    this.pipeline.push({ $unset: Array.isArray(fields) ? fields : [fields] });
+    return this;
+  }
 
   async exec() {
     if (!this.model._find) {
@@ -476,7 +505,6 @@ class Aggregate {
           };
         });
       }
-      
 
       case '$project': {
         return docs.map(doc => {
@@ -581,6 +609,98 @@ class Aggregate {
             }
           }
           return bucket;
+        });
+      }
+  
+      case '$count': {
+        return [{ [operation]: docs.length }];
+      }
+  
+      case '$out': {
+        // Determine the target collection path
+        const targetCollectionPath = path.join(
+          this.connection.dbPath, 
+          `${operation}.json`
+        );
+      
+        // Write the current docs to the target collection
+        await writeJSON(targetCollectionPath, docs);
+      
+        // Optionally, you can return the docs or an empty array
+        return docs;
+      }
+  
+      case '$merge': {
+        const { into, on, whenMatched, whenNotMatched } = operation;
+        
+        // Simulate merge logic
+        const existingCollection = this.model._getCollection(into) || [];
+        
+        const mergedDocs = docs.map(doc => {
+          // Find matching documents based on 'on' field
+          const matchIndex = existingCollection.findIndex(
+            existing => existing[on] === doc[on]
+          );
+  
+          if (matchIndex !== -1) {
+            // When matched
+            switch (whenMatched) {
+              case 'replace':
+                existingCollection[matchIndex] = doc;
+                break;
+              case 'merge':
+                existingCollection[matchIndex] = { 
+                  ...existingCollection[matchIndex], 
+                  ...doc 
+                };
+                break;
+              case 'keepExisting':
+              default:
+                break;
+            }
+          } else {
+            // When not matched
+            switch (whenNotMatched) {
+              case 'insert':
+                existingCollection.push(doc);
+                break;
+              case 'discard':
+              default:
+                break;
+            }
+          }
+  
+          return doc;
+        });
+  
+        return mergedDocs;
+      }
+  
+      case '$replaceRoot': {
+        const { newRoot } = operation;
+        return docs.map(doc => {
+          // Evaluate the new root expression
+          return this._evaluateExpression(newRoot, doc);
+        });
+      }
+  
+      case '$set': {
+        return docs.map(doc => {
+          const updatedDoc = { ...doc };
+          for (const [field, value] of Object.entries(operation)) {
+            updatedDoc[field] = this._evaluateExpression(value, doc);
+          }
+          return updatedDoc;
+        });
+      }
+  
+      case '$unset': {
+        return docs.map(doc => {
+          const updatedDoc = { ...doc };
+          for (const field of operation) {
+            delete updatedDoc[field];
+          }
+          return updatedDoc;
         });
       }
   
