@@ -288,6 +288,13 @@ const results = await Model.aggregate()
 - `$limit`: Limit number of documents
 - `$skip`: Skip number of documents
 - `$unwind`: Deconstruct array field
+- `$lookup`: Perform left outer join
+- `$project`: Reshape documents
+- `$addFields`: Add new fields
+- `$facet`: Process multiple aggregation pipelines
+- `$bucket`: Categorize documents into buckets
+- `$sortByCount`: Group and count documents
+- `$densify`: Fill gaps in time-series data
 
 ### Supported Group Accumulators
 
@@ -296,6 +303,108 @@ const results = await Model.aggregate()
 - `$min`: Get minimum value
 - `$max`: Get maximum value
 - `$push`: Accumulate values into array
+- `$first`: Get first value
+- `$last`: Get last value
+- `$addToSet`: Add unique values to array
+
+## Advanced Features
+
+### Schema Validation
+
+```javascript
+const schema = new localgoose.Schema({
+  email: {
+    type: String,
+    required: true,
+    validate: {
+      validator: function(v) {
+        return /\S+@\S+\.\S+/.test(v);
+      },
+      message: props => `${props.value} is not a valid email!`
+    }
+  },
+  age: {
+    type: Number,
+    min: [18, 'Must be at least 18'],
+    max: [120, 'Must be no more than 120']
+  },
+  password: {
+    type: String,
+    minlength: 8,
+    match: /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z])/
+  }
+});
+```
+
+### Middleware Hooks
+
+```javascript
+// Document middleware
+schema.pre('save', async function() {
+  if (this.isModified('password')) {
+    this.password = await hash(this.password);
+  }
+});
+
+// Query middleware
+schema.pre('find', function() {
+  this.where({ isActive: true });
+});
+
+// Aggregation middleware
+schema.pre('aggregate', function() {
+  this.pipeline().unshift({ $match: { isDeleted: false } });
+});
+```
+
+### Virtual Population
+
+```javascript
+schema.virtual('posts', {
+  ref: 'Post',
+  localField: '_id',
+  foreignField: 'author',
+  justOne: false,
+  options: { sort: { createdAt: -1 } }
+});
+```
+
+### Schema Inheritance
+
+```javascript
+const baseSchema = new localgoose.Schema({
+  name: String,
+  createdAt: Date
+});
+
+const userSchema = new localgoose.Schema({
+  email: String,
+  password: String
+});
+
+userSchema.add(baseSchema);
+```
+
+### Custom Types
+
+```javascript
+class Point {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+}
+
+const pointSchema = new localgoose.Schema({
+  location: {
+    type: Point,
+    validate: {
+      validator: v => v instanceof Point,
+      message: 'Invalid point'
+    }
+  }
+});
+```
 
 ## File Structure
 
@@ -337,6 +446,18 @@ Localgoose provides detailed error messages for:
    - Implement proper error handling
    - Use atomic operations when possible
 
+4. **Performance Optimization**
+   - Use indexes for frequently queried fields
+   - Implement pagination for large datasets
+   - Cache frequently accessed data
+   - Use lean queries when possible
+
+5. **Data Integrity**
+   - Implement proper validation
+   - Use transactions when needed
+   - Handle errors gracefully
+   - Keep backups up to date
+
 ## Limitations
 
 - Not suitable for large datasets (>10MB per collection)
@@ -356,7 +477,7 @@ MIT
 
 ## Author
 
-Anas Qiblawi
+[Anas Qiblawi](https://github.com/AnasQiblawi)
 
 ## Acknowledgments
 

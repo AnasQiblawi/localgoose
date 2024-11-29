@@ -1,6 +1,6 @@
 {
   "name": "localgoose",
-  "version": "1.0.21",
+  "version": "1.0.22",
   "description": "A lightweight, file-based ODM Database for Node.js, inspired by Mongoose",
   "main": "src/index.js",
   "scripts": {
