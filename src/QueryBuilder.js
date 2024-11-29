@@ -49,12 +49,17 @@ class QueryBuilder {
   }
 
   regex(pattern, options = 'i') {
-    this.query.conditions[this.path] = { 
-      $regex: pattern, 
-      $options: options 
-    };
+    if (pattern instanceof RegExp) {
+      // Use the regular expression directly
+      this.query.conditions[this.path] = { $regex: pattern };
+    } else if (typeof pattern === 'string') {
+      // Convert the string to a RegExp with the provided options
+      this.query.conditions[this.path] = { $regex: new RegExp(pattern, options) };
+    } else {
+      throw new Error('Pattern must be a string or RegExp object');
+    }
     return this.query;
-  }
+  } 
 
   ne(val) {
     this.query.conditions[this.path] = { $ne: val };
