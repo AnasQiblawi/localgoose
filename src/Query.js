@@ -99,6 +99,28 @@ class Query {
     clone._skip = this._skip;
     clone._populate = [...this._populate];
     clone._options = { ...this._options };
+    clone._batchSize = this._batchSize;
+    clone._readPreference = this._readPreference;
+    clone._hint = this._hint;
+    clone._comment = this._comment;
+    clone._maxTimeMS = this._maxTimeMS;
+    clone._tailable = this._tailable;
+    clone._session = this._session;
+    clone._update = this._update ? { ...this._update } : null;
+    clone._distinct = this._distinct;
+    clone._error = this._error;
+    clone._explain = this._explain;
+    clone._mongooseOptions = { ...this._mongooseOptions };
+    clone._geoComparison = this._geoComparison;
+    clone._middleware = { 
+      pre: [...this._middleware.pre], 
+      post: [...this._middleware.post] 
+    };
+    clone._geometry = this._geometry;
+    clone._lean = this._lean;
+    clone._writeConcern = { ...this._writeConcern };
+    clone._readConcern = this._readConcern;
+    clone._transform = this._transform;
     return clone;
   }
 
