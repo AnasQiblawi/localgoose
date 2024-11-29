@@ -1,5 +1,6 @@
 const fs = require('fs-extra');
 const path = require('path');
+const { ObjectId } = require('bson');
 
 async function readJSON(filePath, options = {}) {
   const { 
@@ -77,6 +78,10 @@ function validateType(value, type, options = {}) {
     if (type === String) return String(value);
     if (type === Number) return Number(value);
     if (type === Boolean) return Boolean(value);
+    if (type === Date) return new Date(value);
+    if (type === ObjectId) return new ObjectId(value);
+    if (type === Buffer) return Buffer.from(value);
+    if (type === BigInt) return BigInt(value);
   }
 
   // Enhanced type checking with custom class support
@@ -86,6 +91,10 @@ function validateType(value, type, options = {}) {
   if (type === Date) return value instanceof Date || !isNaN(new Date(value).getTime());
   if (type === Array) return Array.isArray(value);
   if (type === Object) return typeof value === 'object' && !Array.isArray(value) && value !== null;
+  if (type === Buffer) return Buffer.isBuffer(value);
+  if (type === ObjectId) return value instanceof ObjectId;
+  if (type === BigInt) return typeof value === 'bigint';
+  if (type === Map) return value instanceof Map;
   
   // Custom class instance check
   if (typeof type === 'function') {
