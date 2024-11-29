@@ -279,6 +279,23 @@ const results = await Model.aggregate()
 - `in`: Match any value in array
 - `nin`: Not match any value in array
 - `regex`: Regular expression match
+- `exists`: Check for existence of a field
+- `size`: Match the size of an array
+- `mod`: Match documents where the value of a field modulo some divisor is equal to a specified remainder
+- `near`: Find documents near a specified point
+- `maxDistance`: Limit the results to documents within a specified distance from the point
+- `within`: Find documents within a specified shape
+- `box`: Find documents within a rectangular box
+- `center`: Find documents within a specified circle
+- `centerSphere`: Find documents within a specified spherical circle
+- `polygon`: Find documents within a specified polygon
+- `geoIntersects`: Find documents that intersect a specified geometry
+- `nearSphere`: Find documents near a specified point using spherical geometry
+- `text`: Full-text search
+- `or`: Logical OR
+- `nor`: Logical NOR
+- `and`: Logical AND
+- `elemMatch`: Match documents that contain an array field with at least one element that matches all the specified query criteria
 
 ### Supported Aggregation Operators
 
@@ -295,6 +312,14 @@ const results = await Model.aggregate()
 - `$bucket`: Categorize documents into buckets
 - `$sortByCount`: Group and count documents
 - `$densify`: Fill gaps in time-series data
+- `$graphLookup`: Perform recursive search on a collection
+- `$unionWith`: Combine documents from another collection
+- `$count`: Count the number of documents
+- `$out`: Write the result to a collection
+- `$merge`: Merge the result with a collection
+- `$replaceRoot`: Replace the input document with the specified document
+- `$set`: Add new fields or update existing fields in documents
+- `$unset`: Remove specified fields from documents
 
 ### Supported Group Accumulators
 
@@ -306,6 +331,9 @@ const results = await Model.aggregate()
 - `$first`: Get first value
 - `$last`: Get last value
 - `$addToSet`: Add unique values to array
+- `$stdDevPop`: Calculate population standard deviation
+- `$stdDevSamp`: Calculate sample standard deviation
+- `$mergeObjects`: Merge objects into a single object
 
 ## Advanced Features
 
