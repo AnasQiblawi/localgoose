@@ -50,7 +50,6 @@ class Model {
     }
   }
 
-  // Rest of the Model class implementation remains exactly the same
   async _createOne(data) {
     const defaultedData = { ...data };
     
@@ -354,6 +353,10 @@ class Model {
     return this.findOneAndDelete({ _id: id });
   }
 
+  async findByIdAndRemove(id) {
+    return this.findOneAndDelete({ _id: id });
+  }
+
   async findByIdAndUpdate(id, update, options = {}) {
     return this.findOneAndUpdate({ _id: id }, update, options);
   }
@@ -391,7 +394,6 @@ class Model {
   async deleteOne(conditions = {}) {
     const docs = await readJSON(this.collectionPath);
     const index = docs.findIndex(doc => this._matchQuery(doc, conditions));
-  
     if (index !== -1) {
       docs.splice(index, 1);
       await writeJSON(this.collectionPath, docs);
@@ -399,7 +401,23 @@ class Model {
     }
   
     return { deletedCount: 0 };
-  }  
+  }
+
+  async updateMany(conditions, update, options = {}) {
+    const docs = await readJSON(this.collectionPath);
+    let modifiedCount = 0;
+
+    for (const doc of docs) {
+      if (this._matchQuery(doc, conditions)) {
+        Object.assign(doc, update);
+        this.applyTimestamps(doc);
+        modifiedCount++;
+      }
+    }
+
+    await writeJSON(this.collectionPath, docs);
+    return { modifiedCount, upsertedCount: 0 };
+  }
 
   hydrate(obj) {
     return new Document(obj, this.schema, this);
@@ -444,7 +462,7 @@ class Model {
     return result;
   }
 
-  startSession() {
+  async startSession() {
     throw new Error('Sessions are not supported in file-based storage');
   }
 
