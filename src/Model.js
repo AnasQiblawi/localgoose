@@ -28,9 +28,9 @@ class Model {
     this.baseModelName = null;
     this._indexes = new Map();
     this._searchIndexes = new Map();
-    
+
     this._initializeCollection();
-    
+
     Object.entries(schema.statics).forEach(([name, fn]) => {
       this[name] = fn.bind(this);
     });
@@ -52,13 +52,13 @@ class Model {
 
   async _createOne(data) {
     const defaultedData = { ...data };
-    
+
     for (const [field, schema] of Object.entries(this.schema.definition)) {
       if (defaultedData[field] === undefined && schema.default !== undefined) {
-        defaultedData[field] = typeof schema.default === 'function' ? 
+        defaultedData[field] = typeof schema.default === 'function' ?
           schema.default() : schema.default;
       }
-      
+
       if (schema.type === Date && typeof defaultedData[field] === 'string') {
         defaultedData[field] = new Date(defaultedData[field]);
       }
@@ -77,8 +77,8 @@ class Model {
 
     const docs = await readJSON(this.collectionPath);
     const now = new Date();
-    const newDoc = { 
-      _id: new ObjectId().toString(), 
+    const newDoc = {
+      _id: new ObjectId().toString(),
       ...defaultedData,
       createdAt: now,
       updatedAt: now
@@ -111,7 +111,7 @@ class Model {
             case '$lt': return doc[key] < operand;
             case '$lte': return doc[key] <= operand;
             case '$ne': return doc[key] !== operand;
-            case '$in': 
+            case '$in':
               const docValue = Array.isArray(doc[key]) ? doc[key] : [doc[key]];
               return operand.some(item => docValue.includes(item));
             case '$nin':
@@ -232,7 +232,7 @@ class Model {
         docs.push(doc);
         nInserted++;
       } else if (op.updateOne) {
-        const index = docs.findIndex(doc => 
+        const index = docs.findIndex(doc =>
           this._matchQuery(doc, op.updateOne.filter)
         );
         if (index !== -1) {
@@ -250,7 +250,7 @@ class Model {
           nUpserted++;
         }
       } else if (op.deleteOne) {
-        const index = docs.findIndex(doc => 
+        const index = docs.findIndex(doc =>
           this._matchQuery(doc, op.deleteOne.filter)
         );
         if (index !== -1) {
@@ -399,7 +399,7 @@ class Model {
       await writeJSON(this.collectionPath, docs);
       return { deletedCount: 1 };
     }
-  
+
     return { deletedCount: 0 };
   }
 
@@ -462,6 +462,29 @@ class Model {
     return result;
   }
 
+  async increment(conditions, field, amount = 1) {
+    const docs = await readJSON(this.collectionPath);
+    let modifiedCount = 0;
+
+    for (const doc of docs) {
+      if (this._matchQuery(doc, conditions)) {
+        // Initialize field if it doesn't exist
+        if (typeof doc[field] !== 'number') {
+          doc[field] = 0;
+        }
+        doc[field] += amount;
+        doc.updatedAt = new Date();
+        modifiedCount++;
+      }
+    }
+
+    if (modifiedCount > 0) {
+      await writeJSON(this.collectionPath, docs);
+    }
+
+    return { modifiedCount };
+  }
+
   async startSession() {
     throw new Error('Sessions are not supported in file-based storage');
   }
@@ -509,53 +532,53 @@ class Model {
 
   async backup(backupPath) {
     const defaultBackupPath = path.join(
-      path.dirname(this.collectionPath), 
+      path.dirname(this.collectionPath),
       `${this.name}_backup_${new Date().toISOString().replace(/:/g, '-')}.json`
     );
-    
+
     const docs = await readJSON(this.collectionPath);
     await writeJSON(backupPath || defaultBackupPath, docs);
     return backupPath || defaultBackupPath;
   }
-  
+
   async restore(backupPath) {
     if (!backupPath) {
       // Find the most recent backup file if no path is provided
       const backupDir = path.dirname(this.collectionPath);
       const backupFiles = await fs.readdir(backupDir);
-      const modelBackupFiles = backupFiles.filter(file => 
+      const modelBackupFiles = backupFiles.filter(file =>
         file.startsWith(`${this.name}_backup_`) && file.endsWith('.json')
       );
-      
+
       if (modelBackupFiles.length === 0) {
         throw new Error(`No backup files found for model: ${this.name}`);
       }
-      
+
       // Sort backup files and get the most recent one
       const mostRecentBackup = modelBackupFiles.sort().reverse()[0];
       backupPath = path.join(backupDir, mostRecentBackup);
     }
-  
+
     const backupDocs = await readJSON(backupPath);
     await writeJSON(this.collectionPath, backupDocs);
     return backupPath;
   }
-  
+
   async listBackups() {
     try {
       const backupDir = path.dirname(this.collectionPath);
       const backupFiles = await fs.readdir(backupDir);
-      
+
       // Filter backup files for this specific model
       const modelBackups = backupFiles
-        .filter(file => 
-          file.startsWith(`${this.name}_backup_`) && 
+        .filter(file =>
+          file.startsWith(`${this.name}_backup_`) &&
           file.endsWith('.json')
         )
         .map(filename => {
           const fullPath = path.join(backupDir, filename);
           const stats = fs.statSync(fullPath);
-          
+
           return {
             filename,
             path: fullPath,
@@ -565,7 +588,7 @@ class Model {
         })
         // Sort from most recent to oldest
         .sort((a, b) => b.createdAt - a.createdAt);
-      
+
       return modelBackups;
     } catch (error) {
       console.error('Error listing backups:', error);
@@ -575,24 +598,24 @@ class Model {
 
   async cleanupBackups(backedupFileName = null) {
     const backups = await this.listBackups();
-  
+
     if (backedupFileName) {
       // Find and delete specific backup
       const backupToDelete = backups.find(backup => backup.filename === backedupFileName);
-      
+
       if (!backupToDelete) {
         throw new Error(`Backup file '${backedupFileName}' not found`);
       }
-  
+
       await fs.unlink(backupToDelete.path);
       return [backupToDelete];
     }
-  
+
     // Delete all backup files by default
     for (const backup of backups) {
       await fs.unlink(backup.path);
     }
-  
+
     return [];
   }
 }
