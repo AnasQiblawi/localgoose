@@ -733,6 +733,16 @@ class Query {
     
     return populatedDoc;
   }
+
+  schemaLevelProjections() {
+    const projections = {};
+    this.model.schema.eachPath((path, schemaType) => {
+      if (schemaType.selected) {
+        projections[path] = 1;
+      }
+    });
+    return projections;
+  }
 }
 
 module.exports = { Query };
