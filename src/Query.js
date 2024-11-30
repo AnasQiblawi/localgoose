@@ -743,6 +743,36 @@ class Query {
     });
     return projections;
   }
+
+  expr(expression) {
+    this.conditions.$expr = expression;
+    return this;
+  }
+
+  jsonSchema(schema) {
+    this.conditions.$jsonSchema = schema;
+    return this;
+  }
+
+  text(search) {
+    this.conditions.$text = { $search: search };
+    return this;
+  }
+
+  meta(path) {
+    this._fields[path] = { $meta: 'textScore' };
+    return this;
+  }
+
+  rand() {
+    this._sort.$rand = 1;
+    return this;
+  }
+
+  natural() {
+    this._sort.$natural = 1;
+    return this;
+  }
 }
 
 module.exports = { Query };
