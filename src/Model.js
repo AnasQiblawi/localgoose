@@ -103,6 +103,18 @@ class Model {
 
   _matchQuery(doc, query) {
     return Object.entries(query).every(([key, value]) => {
+      if (key === '$and') {
+        return value.every(condition => this._matchQuery(doc, condition));
+      }
+      
+      if (key === '$or') {
+        return value.some(condition => this._matchQuery(doc, condition));
+      }
+      
+      if (key === '$nor') {
+        return !value.some(condition => this._matchQuery(doc, condition));
+      }
+  
       if (value && typeof value === 'object') {
         return Object.entries(value).every(([operator, operand]) => {
           switch (operator) {
@@ -120,6 +132,15 @@ class Model {
             case '$regex':
               const regex = new RegExp(operand, value.$options);
               return regex.test(doc[key]);
+            case '$exists':
+              return (operand && doc[key] !== undefined) || (!operand && doc[key] === undefined);
+            case '$type':
+              return typeof doc[key] === operand;
+            case '$mod':
+              return doc[key] % operand[0] === operand[1];
+            case '$text':
+              return typeof doc[key] === 'string' && 
+                     doc[key].toLowerCase().includes(operand.toLowerCase());
             default:
               return false;
           }
@@ -155,14 +176,68 @@ class Model {
     return docs[0] ? new Document(docs[0], this.schema, this) : null;
   }
 
-  async updateOne(conditions, update) {
+  async updateOne(conditions, update, options = {}) {
     const docs = await readJSON(this.collectionPath);
     const index = docs.findIndex(doc => this._matchQuery(doc, conditions));
+    
     if (index !== -1) {
-      docs[index] = { ...docs[index], ...update, updatedAt: new Date() };
+      const doc = docs[index];
+      
+      for (const [key, value] of Object.entries(update)) {
+        if (key.startsWith('$')) {
+          switch (key) {
+            case '$set':
+              Object.assign(doc, value);
+              break;
+            case '$unset':
+              Object.keys(value).forEach(field => delete doc[field]);
+              break;
+            case '$inc':
+              Object.entries(value).forEach(([field, amount]) => {
+                doc[field] = (doc[field] || 0) + amount;
+              });
+              break;
+            case '$mul':
+              Object.entries(value).forEach(([field, factor]) => {
+                doc[field] = (doc[field] || 0) * factor;
+              });
+              break;
+            case '$min':
+              Object.entries(value).forEach(([field, limit]) => {
+                doc[field] = Math.min(doc[field] || Infinity, limit);
+              });
+              break;
+            case '$max':
+              Object.entries(value).forEach(([field, limit]) => {
+                doc[field] = Math.max(doc[field] || -Infinity, limit);
+              });
+              break;
+            case '$push':
+              Object.entries(value).forEach(([field, item]) => {
+                if (!Array.isArray(doc[field])) doc[field] = [];
+                doc[field].push(item);
+              });
+              break;
+            case '$pull':
+              Object.entries(value).forEach(([field, query]) => {
+                if (Array.isArray(doc[field])) {
+                  doc[field] = doc[field].filter(item => 
+                    !this._matchQuery({ item }, { item: query })
+                  );
+                }
+              });
+              break;
+          }
+        } else {
+          doc[key] = value;
+        }
+      }
+      
+      doc.updatedAt = new Date();
       await writeJSON(this.collectionPath, docs);
       return { modifiedCount: 1, upsertedCount: 0 };
     }
+    
     return { modifiedCount: 0, upsertedCount: 0 };
   }
 
@@ -409,12 +484,62 @@ class Model {
 
     for (const doc of docs) {
       if (this._matchQuery(doc, conditions)) {
+        for (const [key, value] of Object.entries(update)) {
+          if (key.startsWith('$')) {
+            switch (key) {
+              case '$set':
+                Object.assign(doc, value);
+                break;
+              case '$unset':
+                Object.keys(value).forEach(field => delete doc[field]);
+                break;
+              case '$inc':
+                Object.entries(value).forEach(([field, amount]) => {
+                  doc[field] = (doc[field] || 0) + amount;
+                });
+                break;
+              case '$mul':
+                Object.entries(value).forEach(([field, factor]) => {
+                  doc[field] = (doc[field] || 0) * factor;
+                });
+                break;
+              case '$min':
+                Object.entries(value).forEach(([field, limit]) => {
+                  doc[field] = Math.min(doc[field] || Infinity, limit);
+                });
+                break;
+              case '$max':
+                Object.entries(value).forEach(([field, limit]) => {
+                  doc[field] = Math.max(doc[field] || -Infinity, limit);
+                });
+                break;
+              case '$push':
+                Object.entries(value).forEach(([field, item]) => {
+                  if (!Array.isArray(doc[field])) doc[field] = [];
+                  doc[field].push(item);
+                });
+                break;
+              case '$pull':
+                Object.entries(value).forEach(([field, query]) => {
+                  if (Array.isArray(doc[field])) {
+                    doc[field] = doc[field].filter(item => 
+                      !this._matchQuery({ item }, { item: query })
+                    );
+                  }
+                });
+                break;
+            }
+          } else {
+            doc[key] = value;
+          }
+        }
+        
         Object.assign(doc, update);
         this.applyTimestamps(doc);
         modifiedCount++;
       }
     }
-
+  
     await writeJSON(this.collectionPath, docs);
     return { modifiedCount, upsertedCount: 0 };
   }
