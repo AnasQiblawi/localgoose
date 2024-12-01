@@ -176,69 +176,137 @@ class Model {
     return docs[0] ? new Document(docs[0], this.schema, this) : null;
   }
 
+  _applyUpdateOperators(doc, update, options = {}) {
+    // const now = new Date();
+    
+    for (const [key, value] of Object.entries(update)) {
+      switch (key) {
+        case '$set':
+          Object.assign(doc, value);
+          break;
+        case '$unset':
+          Object.keys(value).forEach(field => delete doc[field]);
+          break;
+        case '$inc':
+          Object.entries(value).forEach(([field, amount]) => {
+            doc[field] = (doc[field] || 0) + amount;
+          });
+          break;
+        case '$mul':
+          Object.entries(value).forEach(([field, factor]) => {
+            doc[field] = (doc[field] || 0) * factor;
+          });
+          break;
+        case '$min':
+          Object.entries(value).forEach(([field, limit]) => {
+            doc[field] = Math.min(doc[field] || Infinity, limit);
+          });
+          break;
+        case '$max':
+          Object.entries(value).forEach(([field, limit]) => {
+            doc[field] = Math.max(doc[field] || -Infinity, limit);
+          });
+          break;
+        case '$rename':
+          Object.entries(value).forEach(([oldField, newField]) => {
+            if (doc[oldField] !== undefined) {
+              doc[newField] = doc[oldField];
+              delete doc[oldField];
+            }
+          });
+          break;
+        case '$currentDate':
+          Object.entries(value).forEach(([field, typeSpec]) => {
+            doc[field] = typeSpec === true || typeSpec.$type === 'date' 
+              ? new Date() 
+              : Date.now();
+          });
+          break;
+        case '$setOnInsert':
+          if (options.upsert) {
+            Object.assign(doc, value);
+          }
+          break;
+        case '$push':
+          Object.entries(value).forEach(([field, item]) => {
+            if (!Array.isArray(doc[field])) doc[field] = [];
+            doc[field].push(item);
+          });
+          break;
+        case '$pull':
+          Object.entries(value).forEach(([field, query]) => {
+            if (Array.isArray(doc[field])) {
+              doc[field] = doc[field].filter(item => 
+                !this._matchQuery({ item }, { item: query })
+              );
+            }
+          });
+          break;
+        case '$addToSet':
+          Object.entries(value).forEach(([field, item]) => {
+            if (!Array.isArray(doc[field])) doc[field] = [];
+            if (!doc[field].includes(item)) {
+              doc[field].push(item);
+            }
+          });
+          break;
+        case '$pop':
+          Object.entries(value).forEach(([field, pos]) => {
+            if (Array.isArray(doc[field])) {
+              pos === -1 ? doc[field].shift() : doc[field].pop();
+            }
+          });
+          break;
+        case '$pullAll':
+          Object.entries(value).forEach(([field, items]) => {
+            if (Array.isArray(doc[field])) {
+              doc[field] = doc[field].filter(item => !items.includes(item));
+            }
+          });
+          break;
+        case '$bit':
+          Object.entries(value).forEach(([field, ops]) => {
+            if (typeof doc[field] === 'number') {
+              if (ops.and !== undefined) doc[field] &= ops.and;
+              if (ops.or !== undefined) doc[field] |= ops.or;
+              if (ops.xor !== undefined) doc[field] ^= ops.xor;
+            }
+          });
+          break;
+      }
+    }
+    
+    this.applyTimestamps(doc);
+    // doc.updatedAt = now;
+    return doc;
+   }
+
   async updateOne(conditions, update, options = {}) {
     const docs = await readJSON(this.collectionPath);
     const index = docs.findIndex(doc => this._matchQuery(doc, conditions));
-    
+
     if (index !== -1) {
-      const doc = docs[index];
-      
-      for (const [key, value] of Object.entries(update)) {
-        if (key.startsWith('$')) {
-          switch (key) {
-            case '$set':
-              Object.assign(doc, value);
-              break;
-            case '$unset':
-              Object.keys(value).forEach(field => delete doc[field]);
-              break;
-            case '$inc':
-              Object.entries(value).forEach(([field, amount]) => {
-                doc[field] = (doc[field] || 0) + amount;
-              });
-              break;
-            case '$mul':
-              Object.entries(value).forEach(([field, factor]) => {
-                doc[field] = (doc[field] || 0) * factor;
-              });
-              break;
-            case '$min':
-              Object.entries(value).forEach(([field, limit]) => {
-                doc[field] = Math.min(doc[field] || Infinity, limit);
-              });
-              break;
-            case '$max':
-              Object.entries(value).forEach(([field, limit]) => {
-                doc[field] = Math.max(doc[field] || -Infinity, limit);
-              });
-              break;
-            case '$push':
-              Object.entries(value).forEach(([field, item]) => {
-                if (!Array.isArray(doc[field])) doc[field] = [];
-                doc[field].push(item);
-              });
-              break;
-            case '$pull':
-              Object.entries(value).forEach(([field, query]) => {
-                if (Array.isArray(doc[field])) {
-                  doc[field] = doc[field].filter(item => 
-                    !this._matchQuery({ item }, { item: query })
-                  );
-                }
-              });
-              break;
-          }
-        } else {
-          doc[key] = value;
-        }
-      }
-      
-      doc.updatedAt = new Date();
+      const doc = this._applyUpdateOperators(docs[index], update, options);
       await writeJSON(this.collectionPath, docs);
       return { modifiedCount: 1, upsertedCount: 0 };
     }
-    
+
     return { modifiedCount: 0, upsertedCount: 0 };
+  }
+
+  async updateMany(conditions, update, options = {}) {
+    const docs = await readJSON(this.collectionPath);
+    let modifiedCount = 0;
+
+    for (const doc of docs) {
+      if (this._matchQuery(doc, conditions)) {
+        this._applyUpdateOperators(doc, update, options);
+        modifiedCount++;
+      }
+    }
+
+    await writeJSON(this.collectionPath, docs);
+    return { modifiedCount, upsertedCount: 0 };
   }
 
   async deleteMany(conditions = {}) {
@@ -476,72 +544,6 @@ class Model {
     }
 
     return { deletedCount: 0 };
-  }
-
-  async updateMany(conditions, update, options = {}) {
-    const docs = await readJSON(this.collectionPath);
-    let modifiedCount = 0;
-
-    for (const doc of docs) {
-      if (this._matchQuery(doc, conditions)) {
-        for (const [key, value] of Object.entries(update)) {
-          if (key.startsWith('$')) {
-            switch (key) {
-              case '$set':
-                Object.assign(doc, value);
-                break;
-              case '$unset':
-                Object.keys(value).forEach(field => delete doc[field]);
-                break;
-              case '$inc':
-                Object.entries(value).forEach(([field, amount]) => {
-                  doc[field] = (doc[field] || 0) + amount;
-                });
-                break;
-              case '$mul':
-                Object.entries(value).forEach(([field, factor]) => {
-                  doc[field] = (doc[field] || 0) * factor;
-                });
-                break;
-              case '$min':
-                Object.entries(value).forEach(([field, limit]) => {
-                  doc[field] = Math.min(doc[field] || Infinity, limit);
-                });
-                break;
-              case '$max':
-                Object.entries(value).forEach(([field, limit]) => {
-                  doc[field] = Math.max(doc[field] || -Infinity, limit);
-                });
-                break;
-              case '$push':
-                Object.entries(value).forEach(([field, item]) => {
-                  if (!Array.isArray(doc[field])) doc[field] = [];
-                  doc[field].push(item);
-                });
-                break;
-              case '$pull':
-                Object.entries(value).forEach(([field, query]) => {
-                  if (Array.isArray(doc[field])) {
-                    doc[field] = doc[field].filter(item => 
-                      !this._matchQuery({ item }, { item: query })
-                    );
-                  }
-                });
-                break;
-            }
-          } else {
-            doc[key] = value;
-          }
-        }
-        
-        Object.assign(doc, update);
-        this.applyTimestamps(doc);
-        modifiedCount++;
-      }
-    }
-  
-    await writeJSON(this.collectionPath, docs);
-    return { modifiedCount, upsertedCount: 0 };
   }
 
   hydrate(obj) {
