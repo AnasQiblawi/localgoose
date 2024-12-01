@@ -269,6 +269,33 @@ const results = await Model.aggregate()
   .exec();
 ```
 
+### Supported Update Operators
+
+#### Field Update Operators
+- `$set`: Sets the value of a field
+- `$unset`: Removes the specified field from a document
+- `$rename`: Renames a field
+- `$setOnInsert`: Sets the value of a field if an update results in an insert
+
+#### Increment/Decrement Operators
+- `$inc`: Increments the value of a field by the specified amount
+- `$mul`: Multiplies the value of a field by the specified amount
+- `$min`: Updates the field only if the specified value is less than the existing value
+- `$max`: Updates the field only if the specified value is greater than the existing value
+
+#### Array Update Operators
+- `$push`: Adds an item to an array
+- `$pull`: Removes all array elements that match a specified query
+- `$addToSet`: Adds elements to an array only if they do not already exist
+- `$pop`: Removes the first or last item from an array
+- `$pullAll`: Removes all matching values from an array
+
+#### Bitwise Operators
+- `$bit`: Performs bitwise AND, OR, and XOR updates of integer values
+
+#### Date Operators
+- `$currentDate`: Sets the value of a field to the current date
+
 ### Supported Query Operators
 
 - `equals`: Exact match
