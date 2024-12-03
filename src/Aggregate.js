@@ -123,6 +123,36 @@ class Aggregate {
     return this;
   }
 
+  bucketAuto(options) {
+    this.pipeline.push({ $bucketAuto: options });
+    return this;
+  }
+
+  changeStream(options = {}) {
+    this.pipeline.push({ $changeStream: options });
+    return this;
+  }
+
+  documents(docs) {
+    this.pipeline.push({ $documents: docs });
+    return this;
+  }
+
+  fill(options) {
+    this.pipeline.push({ $fill: options });
+    return this;
+  }
+
+  sample(size) {
+    this.pipeline.push({ $sample: { size } });
+    return this;
+  }
+
+  setWindowFields(options) {
+    this.pipeline.push({ $setWindowFields: options });
+    return this;
+  }
+
   async exec() {
     if (!this.model._find) {
       throw new Error('_find method is not implemented in the model');
@@ -399,6 +429,23 @@ class Aggregate {
       case '$last':
         group[field] = value;
         break;
+    }
+  }
+
+  _calculateAccumulator(docs, accumulator) {
+    const operator = Object.keys(accumulator)[0];
+    const field = accumulator[operator];
+
+    switch (operator) {
+      case '$sum':
+        return docs.reduce((sum, doc) => sum + (doc[field] || 0), 0);
+      case '$avg':
+        const values = docs.map(doc => doc[field]).filter(v => v !== null);
+        return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+      case '$max':
+        return Math.max(...docs.map(doc => doc[field]).filter(v => v !== null));
+      case '$min':
+        return Math.min(...docs.map(doc => doc[field]).filter(v => v !== null));
     }
   }
 
@@ -702,6 +749,87 @@ class Aggregate {
           }
           return updatedDoc;
         });
+      }
+  
+      case '$bucketAuto': {
+        const { groupBy, buckets, output = {} } = operation;
+        const values = docs.map(doc => this._evaluateExpression(groupBy, doc)).sort((a, b) => a - b);
+        const bucketSize = Math.ceil(values.length / buckets);
+        
+        return Array.from({ length: buckets }, (_, i) => {
+          const start = i * bucketSize;
+          const end = (i + 1) * bucketSize;
+          
+          const bucketDocs = docs.filter((doc, index) => 
+            index >= start && index < Math.min(end, docs.length)
+          );
+          
+          return {
+            _id: { 
+              min: values[start], 
+              max: values[Math.min(end - 1, values.length - 1)] 
+            },
+            count: bucketDocs.length,
+            ...this._computeOutputFields(bucketDocs, output)
+          };
+        });
+      }
+  
+      case '$fill': {
+        const { sortBy, output } = operation;
+        const sortedDocs = sortBy ? this._sort(docs, sortBy) : [...docs];
+        
+        return sortedDocs.map(doc => {
+          const filledDoc = { ...doc };
+          
+          for (const [field, method] of Object.entries(output)) {
+            if (filledDoc[field] === null || filledDoc[field] === undefined) {
+              switch (method) {
+                case 'linear':
+                  const docIndex = sortedDocs.indexOf(doc);
+                  const prevDoc = sortedDocs[docIndex - 1];
+                  const nextDoc = sortedDocs[docIndex + 1];
+                  if (prevDoc && nextDoc) {
+                    filledDoc[field] = (prevDoc[field] + nextDoc[field]) / 2;
+                  }
+                  break;
+                case 'locf':
+                  const lastValidDoc = sortedDocs.findLast(d => 
+                    d[field] !== null && d[field] !== undefined
+                  );
+                  if (lastValidDoc) {
+                    filledDoc[field] = lastValidDoc[field];
+                  }
+                  break;
+              }
+            }
+          }
+          
+          return filledDoc;
+        });
+      }
+  
+      case '$documents': {
+        return Array.isArray(operation) ? operation : [operation];
+      }
+  
+      case '$sample': {
+        const { size } = operation;
+        return docs
+          .sort(() => 0.5 - Math.random())
+          .slice(0, size);
+      }
+  
+      case '$setWindowFields': {
+        const { partitionBy, sortBy, output } = operation;
+        
+        const partitionedDocs = partitionBy 
+          ? this._partitionDocuments(docs, partitionBy) 
+          : [docs];
+        
+        return partitionedDocs.flatMap(partition => 
+          this._computeWindowFields(partition, sortBy, output)
+        );
       }
   
       default:
