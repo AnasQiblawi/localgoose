@@ -324,7 +324,25 @@ class Aggregate {
   }
 
   _getFieldValue(doc, path) {
-    return path.split('.').reduce((obj, key) => obj && obj[key], doc);
+    if (!path) return doc;
+    
+    // Handle dot notation for nested fields
+    const parts = path.split('.');
+    let value = doc;
+    
+    for (const part of parts) {
+      if (value == null) return null;
+      
+      // Handle array field references (e.g., 'posts.likes')
+      if (Array.isArray(value)) {
+        // Map through array and get the specified field from each element
+        return value.map(item => this._getFieldValue(item, part));
+      }
+      
+      value = value[part];
+    }
+    
+    return value;
   }
 
   _setFieldValue(doc, path, value) {

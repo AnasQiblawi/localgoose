@@ -306,7 +306,7 @@ const main = async () => {
     // Demonstrate nested aggregations
     const userPostStats = await User.aggregate()
       .lookup({
-        from: 'posts',
+        from: 'Post',
         localField: '_id',
         foreignField: 'author',
         as: 'posts'
