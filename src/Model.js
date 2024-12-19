@@ -81,7 +81,8 @@ class Model {
       _id: new ObjectId().toString(),
       ...defaultedData,
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      __v: 0
     };
 
     docs.push(newDoc);
@@ -276,6 +277,11 @@ class Model {
       }
     }
     
+    // Increment version key
+    if (this.schema.options.versionKey !== false) {
+      doc.__v = (doc.__v || 0) + 1;
+    }
+
     this.applyTimestamps(doc);
     // doc.updatedAt = now;
     return doc;
@@ -744,6 +750,40 @@ class Model {
     }
 
     return [];
+  }
+
+  async save() {
+    if (this._timestamps) {
+      this._doc.updatedAt = new Date();
+      if (this.isNew) {
+        this._doc.createdAt = new Date();
+      }
+    }
+
+    if (this._schema.middleware.pre.save) {
+      for (const middleware of this._schema.middleware.pre.save) {
+        await middleware.call(this);
+      }
+    }
+
+    const errors = await this.$validate();
+    if (errors.length > 0) {
+      throw new Error(errors.join(', '));
+    }
+
+    const result = await this._model.updateOne(
+      { _id: this._id },
+      this._doc
+    );
+
+    if (this._schema.middleware.post.save) {
+      for (const middleware of this._schema.middleware.post.save) {
+        await middleware.call(this);
+      }
+    }
+
+    this._isNew = false;
+    return result;
   }
 }
 

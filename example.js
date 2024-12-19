@@ -54,7 +54,7 @@ const main = async () => {
       },
       lastLogin: { type: Date },
       createdAt: { type: Date, default: Date.now }
-    });
+    }, { timestamps: true, versionKey: '__v' });
 
     // Define Post schema with proper ObjectId reference
     const postSchema = new localgoose.Schema({
@@ -319,6 +319,14 @@ const main = async () => {
       .sort({ totalLikes: -1 })
       .exec();
     logOutput('User post statistics:', userPostStats);
+
+    // Demonstrate updating data
+    console.log('\n--- Updating Data ---');
+    const updatedJohn = await User.findByIdAndUpdate(john._id, { age: 26 }, { new: true });
+    logOutput('Updated John\'s age:', updatedJohn);
+
+    const updatedPost1 = await Post.findByIdAndUpdate(post1._id, { likes: 20 }, { new: true });
+    logOutput('Updated Post1 likes:', updatedPost1);
 
     // Clean up: Delete all records before disconnecting
     console.log('\n--- Cleaning up Database ---');

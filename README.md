@@ -18,6 +18,11 @@ A lightweight, file-based ODM (Object-Document Mapper) for Node.js, inspired by 
 - 📑 Compound indexing support
 - 🔄 Schema inheritance and discrimination
 - 🎨 Custom type casting and validation
+- 🗄️ Backup and restore functionality
+- 🧩 Custom types and schema inheritance
+- 🛠️ Middleware hooks for documents, queries, and aggregations
+- 🌐 Geospatial queries and indexing
+- 📅 Date operators and bitwise operators
 
 ## Installation
 
@@ -267,6 +272,22 @@ const results = await Model.aggregate()
   .sort({ total: -1 })
   .limit(5)
   .exec();
+```
+
+## Backup and Restore
+
+```javascript
+// Create backup
+const backupPath = await Model.backup();
+
+// Restore from backup
+await Model.restore(backupPath);
+
+// List backups
+const backups = await Model.listBackups();
+
+// Clean up old backups
+await Model.cleanupBackups();
 ```
 
 ### Supported Update Operators

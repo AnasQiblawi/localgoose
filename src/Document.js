@@ -338,6 +338,11 @@ class Document {
       throw new Error(errors.join(', '));
     }
 
+    // Increment version key
+    if (this._schema.options.versionKey !== false) {
+      this._doc.__v = (this._doc.__v || 0) + 1;
+    }
+
     const result = await this._model.updateOne(
       { _id: this._id },
       this._doc

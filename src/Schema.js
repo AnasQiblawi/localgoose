@@ -24,6 +24,15 @@ class Schema {
 
     this.reserved = Schema.reserved;
 
+    // Handle schema options
+    if (options.timestamps) {
+      this.definition.createdAt = { type: Date, default: Date.now };
+      this.definition.updatedAt = { type: Date, default: Date.now };
+    }
+    if (options.versionKey !== false) {
+      this.definition.__v = { type: Number, default: 0 };
+    }
+
     this._init();
   }
 
