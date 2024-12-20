@@ -1,4 +1,5 @@
 class VirtualType {
+  // === Core Functionality ===
   constructor(options = {}) {
     this.path = options.path;
     this.getters = [];
@@ -11,6 +12,37 @@ class VirtualType {
     this._count = false;
     this._match = null;
     this._defaultValue = undefined;
+  }
+
+  clone() {
+    const clone = new VirtualType(this.options);
+    clone.getters = [...this.getters];
+    clone.setters = [...this.setters];
+    clone._ref = this._ref;
+    clone._localField = this._localField;
+    clone._foreignField = this._foreignField;
+    clone._justOne = this._justOne;
+    clone._count = this._count;
+    clone._match = this._match;
+    clone._defaultValue = this._defaultValue;
+    return clone;
+  }
+
+  // === Getter and Setter Methods ===
+  get(fn) {
+    if (typeof fn !== 'function') {
+      throw new Error('Getter must be a function');
+    }
+    this.getters.push(fn);
+    return this;
+  }
+
+  set(fn) {
+    if (typeof fn !== 'function') {
+      throw new Error('Setter must be a function');
+    }
+    this.setters.push(fn);
+    return this;
   }
 
   applyGetters(value, doc) {
@@ -51,22 +83,7 @@ class VirtualType {
     return val;
   }
 
-  get(fn) {
-    if (typeof fn !== 'function') {
-      throw new Error('Getter must be a function');
-    }
-    this.getters.push(fn);
-    return this;
-  }
-
-  set(fn) {
-    if (typeof fn !== 'function') {
-      throw new Error('Setter must be a function');
-    }
-    this.setters.push(fn);
-    return this;
-  }
-
+  // === Reference Configuration ===
   ref(model) {
     this._ref = model;
     return this;
@@ -82,6 +99,7 @@ class VirtualType {
     return this;
   }
 
+  // === Virtual Configuration ===
   justOne(val = true) {
     this._justOne = val;
     return this;
@@ -100,20 +118,6 @@ class VirtualType {
   default(val) {
     this._defaultValue = val;
     return this;
-  }
-
-  clone() {
-    const clone = new VirtualType(this.options);
-    clone.getters = [...this.getters];
-    clone.setters = [...this.setters];
-    clone._ref = this._ref;
-    clone._localField = this._localField;
-    clone._foreignField = this._foreignField;
-    clone._justOne = this._justOne;
-    clone._count = this._count;
-    clone._match = this._match;
-    clone._defaultValue = this._defaultValue;
-    return clone;
   }
 }
 

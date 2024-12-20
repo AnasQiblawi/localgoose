@@ -1,4 +1,5 @@
 class SchemaType {
+  // === Core Functionality ===
   constructor(path, options = {}, instance) {
     this.path = path;
     this.instance = instance;
@@ -114,7 +115,7 @@ class SchemaType {
     }
   }
 
-  // Existing static methods
+  // === Static Methods ===
   static cast(val) {
     return val;
   }
@@ -135,83 +136,7 @@ class SchemaType {
     return this;
   }
 
-  enum(values) {
-    if (Array.isArray(values)) {
-      this._enum = values;
-      this.validate({
-        validator: (val) => values.includes(val),
-        message: `{PATH} must be one of: ${values.join(', ')}`
-      });
-    }
-    return this;
-  }
-
-  min(value, message) {
-    this._min = value;
-    this.validate({
-      validator: (val) => {
-        if (typeof val === 'string' || typeof val === 'number') {
-          return val >= value;
-        }
-        return true;
-      },
-      message: message || `{PATH} must be at least ${value}`
-    });
-    return this;
-  }
-
-  max(value, message) {
-    this._max = value;
-    this.validate({
-      validator: (val) => {
-        if (typeof val === 'string' || typeof val === 'number') {
-          return val <= value;
-        }
-        return true;
-      },
-      message: message || `{PATH} must be no more than ${value}`
-    });
-    return this;
-  }
-
-  trim(value = true) {
-    this._trim = value;
-    if (value) {
-      this.set(val => typeof val === 'string' ? val.trim() : val);
-    }
-    return this;
-  }
-
-  lowercase(value = true) {
-    this._lowercase = value;
-    if (value) {
-      this.set(val => typeof val === 'string' ? val.toLowerCase() : val);
-    }
-    return this;
-  }
-
-  uppercase(value = true) {
-    this._uppercase = value;
-    if (value) {
-      this.set(val => typeof val === 'string' ? val.toUpperCase() : val);
-    }
-    return this;
-  }
-
-  match(regex, message) {
-    this._match = regex;
-    this.validate({
-      validator: (val) => {
-        if (typeof val === 'string') {
-          return regex.test(val);
-        }
-        return true;
-      },
-      message: message || `{PATH} does not match the required pattern`
-    });
-    return this;
-  }
-
+  // === Type Validation and Casting ===
   cast(val) {
     if (val == null) {
       return val;
@@ -287,18 +212,36 @@ class SchemaType {
     return (val) => this.cast(val);
   }
 
-  default(val) {
-    if (arguments.length === 0) {
-      return this._default;
-    }
-
-    if (val === null) {
-      this._default = null;
+  // === Validation Methods ===
+  validate(obj, message) {
+    if (obj == null) {
       return this;
     }
 
-    this._default = val;
+    const validator = this._createValidator(obj, message);
+    
+    // Ensure this is the last validator added
+    const existingValidatorIndex = this.validators.findIndex(v => v.type === validator.type);
+    if (existingValidatorIndex !== -1) {
+      this.validators.splice(existingValidatorIndex, 1);
+    }
+
+    this.validators.push(validator);
     return this;
+  }
+
+  async validateAll() {
+    const results = await Promise.all(
+      this.validators.map(validator => {
+        try {
+          const result = validator.validator();
+          return Promise.resolve(result);
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      })
+    );
+    return results.every(result => result === true);
   }
 
   async doValidate(value, fn, context) {
@@ -338,38 +281,82 @@ class SchemaType {
     }
   }
 
-  get(fn) {
-    this.getters.push(fn);
-    return this;
-  }
+  _createValidator(obj, message) {
+    try {
+      if (typeof obj === 'function') {
+        return {
+          validator: obj,
+          message: message || `Validation failed for path \`${this.path}\``,
+          type: 'user defined'
+        };
+      }
 
-  getDefault() {
-    if (typeof this._default === 'function') {
-      return this._default();
+      if (obj.validator) {
+        return {
+          validator: obj.validator,
+          message: obj.message || message || `Validation failed for path \`${this.path}\``,
+          type: obj.type || 'user defined'
+        };
+      }
+
+      throw new Error('Invalid validator');
+    } catch (error) {
+      console.error(`Validator creation error for ${this.path}:`, error);
+      throw error;
     }
-    return this._default;
   }
 
-  getEmbeddedSchemaType() {
-    return this._embedded;
-  }
-
-  immutable(value = true) {
-    this._immutable = value;
+  // === Field Constraints ===
+  enum(values) {
+    if (Array.isArray(values)) {
+      this._enum = values;
+      this.validate({
+        validator: (val) => values.includes(val),
+        message: `{PATH} must be one of: ${values.join(', ')}`
+      });
+    }
     return this;
   }
 
-  index(val) {
-    this._index = val;
+  min(value, message) {
+    this._min = value;
+    this.validate({
+      validator: (val) => {
+        if (typeof val === 'string' || typeof val === 'number') {
+          return val >= value;
+        }
+        return true;
+      },
+      message: message || `{PATH} must be at least ${value}`
+    });
     return this;
   }
 
-  get isRequired() {
-    return this.validators.some(v => v.isRequired);
+  max(value, message) {
+    this._max = value;
+    this.validate({
+      validator: (val) => {
+        if (typeof val === 'string' || typeof val === 'number') {
+          return val <= value;
+        }
+        return true;
+      },
+      message: message || `{PATH} must be no more than ${value}`
+    });
+    return this;
   }
 
-  ref(ref) {
-    this._ref = ref;
+  match(regex, message) {
+    this._match = regex;
+    this.validate({
+      validator: (val) => {
+        if (typeof val === 'string') {
+          return regex.test(val);
+        }
+        return true;
+      },
+      message: message || `{PATH} does not match the required pattern`
+    });
     return this;
   }
 
@@ -398,13 +385,43 @@ class SchemaType {
     return this;
   }
 
-  select(val) {
-    this.selected = val;
+  // === String Modifiers ===
+  trim(value = true) {
+    this._trim = value;
+    if (value) {
+      this.set(val => typeof val === 'string' ? val.trim() : val);
+    }
     return this;
   }
 
-  set(fn) {
-    this.setters.push(fn);
+  lowercase(value = true) {
+    this._lowercase = value;
+    if (value) {
+      this.set(val => typeof val === 'string' ? val.toLowerCase() : val);
+    }
+    return this;
+  }
+
+  uppercase(value = true) {
+    this._uppercase = value;
+    if (value) {
+      this.set(val => typeof val === 'string' ? val.toUpperCase() : val);
+    }
+    return this;
+  }
+
+  // === Schema Options ===
+  default(val) {
+    if (arguments.length === 0) {
+      return this._default;
+    }
+
+    if (val === null) {
+      this._default = null;
+      return this;
+    }
+
+    this._default = val;
     return this;
   }
 
@@ -413,8 +430,28 @@ class SchemaType {
     return this;
   }
 
+  unique(val = true) {
+    this._unique = val;
+    return this;
+  }
+
   text(val = true) {
     this._text = val;
+    return this;
+  }
+
+  index(val) {
+    this._index = val;
+    return this;
+  }
+
+  immutable(value = true) {
+    this._immutable = value;
+    return this;
+  }
+
+  ref(ref) {
+    this._ref = ref;
     return this;
   }
 
@@ -423,42 +460,34 @@ class SchemaType {
     return this;
   }
 
-  unique(val = true) {
-    this._unique = val;
+  // === Getters and Setters ===
+  get(fn) {
+    this.getters.push(fn);
     return this;
   }
 
-  validate(obj, message) {
-    if (obj == null) {
-      return this;
-    }
-
-    const validator = this._createValidator(obj, message);
-    
-    // Ensure this is the last validator added
-    const existingValidatorIndex = this.validators.findIndex(v => v.type === validator.type);
-    if (existingValidatorIndex !== -1) {
-      this.validators.splice(existingValidatorIndex, 1);
-    }
-
-    this.validators.push(validator);
+  set(fn) {
+    this.setters.push(fn);
     return this;
   }
 
-  async validateAll() {
-    const results = await Promise.all(
-      this.validators.map(validator => {
-        try {
-          const result = validator.validator();
-          return Promise.resolve(result);
-        } catch (error) {
-          return Promise.reject(error);
-        }
-      })
-    );
-    return results.every(result => result === true);
+  select(val) {
+    this.selected = val;
+    return this;
   }
 
+  getDefault() {
+    if (typeof this._default === 'function') {
+      return this._default();
+    }
+    return this._default;
+  }
+
+  getEmbeddedSchemaType() {
+    return this._embedded;
+  }
+
+  // === Property Accessors ===
   get validators() {
     return this._validators || [];
   }
@@ -467,29 +496,8 @@ class SchemaType {
     this._validators = v;
   }
 
-  _createValidator(obj, message) {
-    try {
-      if (typeof obj === 'function') {
-        return {
-          validator: obj,
-          message: message || `Validation failed for path \`${this.path}\``,
-          type: 'user defined'
-        };
-      }
-
-      if (obj.validator) {
-        return {
-          validator: obj.validator,
-          message: obj.message || message || `Validation failed for path \`${this.path}\``,
-          type: obj.type || 'user defined'
-        };
-      }
-
-      throw new Error('Invalid validator');
-    } catch (error) {
-      console.error(`Validator creation error for ${this.path}:`, error);
-      throw error;
-    }
+  get isRequired() {
+    return this.validators.some(v => v.isRequired);
   }
 }
 

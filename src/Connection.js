@@ -4,6 +4,7 @@ const { Model } = require('./Model.js');
 const { EventEmitter } = require('events');
 
 class Connection {
+  // === Core Functionality ===
   constructor(dbPath = './db') {
     this.dbPath = dbPath;
     this.models = {};
@@ -31,12 +32,10 @@ class Connection {
     }
   }
 
-  async asPromise() {
-    return this.connect();
-  }
-
-  get client() {
-    return this;
+  async disconnect() {
+    this.models = {};
+    this.collections = {};
+    this.readyState = 0;
   }
 
   async close() {
@@ -45,6 +44,34 @@ class Connection {
     this.readyState = 0;
   }
 
+  // === Database Operations ===
+  async dropDatabase() {
+    try {
+      await fs.rm(this.dbPath, { recursive: true, force: true });
+      this.collections = {};
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async removeDb() {
+    await this.dropDatabase();
+  }
+
+  async destroy() {
+    await this.dropDatabase();
+    await this.close();
+  }
+
+  async useDb(name) {
+    const newDbPath = path.join(path.dirname(this.dbPath), name);
+    const newConnection = new Connection(newDbPath);
+    await newConnection.connect();
+    return newConnection;
+  }
+
+  // === Collection Management ===
   async collection(name) {
     if (!this.collections[name]) {
       this.collections[name] = {
@@ -53,22 +80,6 @@ class Connection {
       };
     }
     return this.collections[name];
-  }
-
-  model(name, schema) {
-    if (schema) {
-      this.models[name] = new Model(name, schema, this);
-    }
-    return this.models[name];
-  }
-
-  deleteModel(name) {
-    delete this.models[name];
-  }
-
-  async destroy() {
-    await this.dropDatabase();
-    await this.close();
   }
 
   async dropCollection(name) {
@@ -81,24 +92,6 @@ class Connection {
       if (error.code === 'ENOENT') return false;
       throw error;
     }
-  }
-
-  async dropDatabase() {
-    try {
-      await fs.rm(this.dbPath, { recursive: true, force: true });
-      this.collections = {};
-      return true;
-    } catch (error) {
-      return false;
-    }
-  }
-
-  get(key) {
-    return this.config.get(key);
-  }
-
-  async getClient() {
-    return this.client;
   }
 
   async listCollections() {
@@ -115,8 +108,30 @@ class Connection {
     }
   }
 
+  // === Model Management ===
+  model(name, schema) {
+    if (schema) {
+      this.models[name] = new Model(name, schema, this);
+    }
+    return this.models[name];
+  }
+
+  deleteModel(name) {
+    delete this.models[name];
+  }
+
   modelNames() {
     return Object.keys(this.models);
+  }
+
+  // === Configuration Methods ===
+  get(key) {
+    return this.config.get(key);
+  }
+
+  set(key, value) {
+    this.config.set(key, value);
+    return this;
   }
 
   plugin(fn, opts) {
@@ -126,13 +141,26 @@ class Connection {
     return this;
   }
 
-  async removeDb() {
-    await this.dropDatabase();
+  // === Session and Transaction Handling ===
+  async startSession() {
+    throw new Error('Sessions are not supported in file-based storage');
   }
 
-  set(key, value) {
-    this.config.set(key, value);
+  async transaction(fn) {
+    throw new Error('Transactions are not supported in file-based storage');
+  }
+
+  async withSession(fn) {
+    throw new Error('Sessions are not supported in file-based storage');
+  }
+
+  // === Client Management ===
+  get client() {
     return this;
+  }
+
+  async getClient() {
+    return this.client;
   }
 
   setClient(client) {
@@ -140,38 +168,20 @@ class Connection {
     return this;
   }
 
-  async startSession() {
-    throw new Error('Sessions are not supported in file-based storage');
-  }
-
+  // === Index Management ===
   async syncIndexes(options = {}) {
     // No-op for file-based system
     return [];
   }
 
-  async transaction(fn) {
-    throw new Error('Transactions are not supported in file-based storage');
+  // === Promise Interface ===
+  async asPromise() {
+    return this.connect();
   }
 
-  async useDb(name) {
-    const newDbPath = path.join(path.dirname(this.dbPath), name);
-    const newConnection = new Connection(newDbPath);
-    await newConnection.connect();
-    return newConnection;
-  }
-
+  // === Watching and Monitoring ===
   async watch() {
     throw new Error('Watch is not supported in file-based storage');
-  }
-
-  async withSession(fn) {
-    throw new Error('Sessions are not supported in file-based storage');
-  }
-
-  async disconnect() {
-    this.models = {};
-    this.collections = {};
-    this.readyState = 0;
   }
 }
 

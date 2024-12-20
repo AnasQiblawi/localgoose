@@ -1,4 +1,5 @@
 class Aggregate {
+  // === Core Functionality ===
   constructor(model, pipeline = []) {
     if (!model) {
       throw new Error('Model is required for aggregation');
@@ -23,6 +24,109 @@ class Aggregate {
     });
   }
 
+  async exec() {
+    if (!this.model._find) {
+      throw new Error('_find method is not implemented in the model');
+    }
+    let docs = await this.model._find();
+    
+    for (const stage of this.pipeline) {
+      const operator = Object.keys(stage)[0];
+      const operation = stage[operator];
+      
+      switch (operator) {
+        case '$match':
+          docs = docs.filter(doc => this.model._matchQuery(doc, operation));
+          break;
+          
+        case '$group':
+          docs = this._group(docs, operation);
+          break;
+          
+        case '$sort':
+          docs = this._sort(docs, operation);
+          break;
+          
+        case '$limit':
+          docs = docs.slice(0, operation);
+          break;
+          
+        case '$skip':
+          docs = docs.slice(operation);
+          break;
+          
+        case '$unwind':
+          docs = this._unwind(docs, operation);
+          break;
+        
+        case '$project':
+          docs = docs.map(doc => {
+            const projectedDoc = {};
+            for (const [field, spec] of Object.entries(operation)) {
+              if (typeof spec === 'number') {
+                if (spec === 1) {
+                  projectedDoc[field] = this._getFieldValue(doc, field);
+                }
+              } else if (typeof spec === 'object') {
+                projectedDoc[field] = this._evaluateExpression(spec, doc);
+              }
+            }
+            return projectedDoc;
+          });
+          break;
+        
+        case '$lookup':
+          docs = docs.map(doc => {
+            const { from, localField, foreignField, as } = operation;
+            
+            // Assume we have access to another model/collection
+            const foreignDocs = this.model._getCollection(from);
+            
+            doc[as] = foreignDocs.filter(foreignDoc =>
+              foreignDoc[foreignField] === doc[localField]
+            );
+
+            return doc;
+          });
+          break;
+
+        case '$addFields':
+          docs = docs.map(doc => {
+            const newDoc = { ...doc };
+            for (const [field, value] of Object.entries(operation)) {
+              newDoc[field] = this._evaluateExpression(value, doc);
+            }
+            return newDoc;
+          });
+          break;
+
+        case '$densify':
+          // Handle densify (requires additional logic to generate gaps and fill them)
+          docs = this._densify(docs, operation);
+          break;
+
+        case '$facet':
+          docs = [this._facet(docs, operation)];
+          break;
+
+        case '$graphLookup':
+          docs = this._graphLookup(docs, operation);
+          break;
+
+        case '$unionWith':
+          docs = this._unionWith(docs, operation);
+          break;
+
+        case '$sortByCount':
+          docs = this._sortByCount(docs, operation);
+          break;
+      }
+    }
+
+    return docs;
+  }
+
+  // === Pipeline Stage Methods ===
   match(criteria) {
     this.pipeline.push({ $match: criteria });
     return this;
@@ -153,108 +257,7 @@ class Aggregate {
     return this;
   }
 
-  async exec() {
-    if (!this.model._find) {
-      throw new Error('_find method is not implemented in the model');
-    }
-    let docs = await this.model._find();
-    
-    for (const stage of this.pipeline) {
-      const operator = Object.keys(stage)[0];
-      const operation = stage[operator];
-      
-      switch (operator) {
-        case '$match':
-          docs = docs.filter(doc => this.model._matchQuery(doc, operation));
-          break;
-          
-        case '$group':
-          docs = this._group(docs, operation);
-          break;
-          
-        case '$sort':
-          docs = this._sort(docs, operation);
-          break;
-          
-        case '$limit':
-          docs = docs.slice(0, operation);
-          break;
-          
-        case '$skip':
-          docs = docs.slice(operation);
-          break;
-          
-        case '$unwind':
-          docs = this._unwind(docs, operation);
-          break;
-        
-        case '$project':
-          docs = docs.map(doc => {
-            const projectedDoc = {};
-            for (const [field, spec] of Object.entries(operation)) {
-              if (typeof spec === 'number') {
-                if (spec === 1) {
-                  projectedDoc[field] = this._getFieldValue(doc, field);
-                }
-              } else if (typeof spec === 'object') {
-                projectedDoc[field] = this._evaluateExpression(spec, doc);
-              }
-            }
-            return projectedDoc;
-          });
-          break;
-        
-        case '$lookup':
-          docs = docs.map(doc => {
-            const { from, localField, foreignField, as } = operation;
-            
-            // Assume we have access to another model/collection
-            const foreignDocs = this.model._getCollection(from);
-            
-            doc[as] = foreignDocs.filter(foreignDoc =>
-              foreignDoc[foreignField] === doc[localField]
-            );
-
-            return doc;
-          });
-          break;
-
-        case '$addFields':
-          docs = docs.map(doc => {
-            const newDoc = { ...doc };
-            for (const [field, value] of Object.entries(operation)) {
-              newDoc[field] = this._evaluateExpression(value, doc);
-            }
-            return newDoc;
-          });
-          break;
-
-        case '$densify':
-          // Handle densify (requires additional logic to generate gaps and fill them)
-          docs = this._densify(docs, operation);
-          break;
-
-        case '$facet':
-          docs = [this._facet(docs, operation)];
-          break;
-
-        case '$graphLookup':
-          docs = this._graphLookup(docs, operation);
-          break;
-
-        case '$unionWith':
-          docs = this._unionWith(docs, operation);
-          break;
-
-        case '$sortByCount':
-          docs = this._sortByCount(docs, operation);
-          break;
-      }
-    }
-
-    return docs;
-  }
-
+  // === Pipeline Stage Execution Helpers ===
   _group(docs, grouping) {
     const groups = new Map();
     
@@ -323,6 +326,180 @@ class Aggregate {
     return result;
   }
 
+  _densify(docs, options) {
+    const { field, range, partitionByFields = [] } = options;
+  
+    if (!range || !field) {
+      throw new Error('$densify requires both a "field" and a "range" property.');
+    }
+  
+    const { step, unit, bounds } = range;
+  
+    // Helper function to increment based on unit
+    const incrementValue = (value) => {
+      switch (unit) {
+        case 'days':
+          return new Date(value.setDate(value.getDate() + step));
+        case 'hours':
+          return new Date(value.setHours(value.getHours() + step));
+        case 'minutes':
+          return new Date(value.setMinutes(value.getMinutes() + step));
+        default:
+          return value + step;
+      }
+    };
+  
+    const groups = partitionByFields.length
+      ? this._groupByPartition(docs, partitionByFields)
+      : { global: docs };
+  
+    const result = [];
+  
+    for (const group of Object.values(groups)) {
+      const values = group.map(doc => doc[field]).sort((a, b) => a - b);
+  
+      const start = bounds && bounds[0] !== undefined 
+        ? new Date(bounds[0]) 
+        : new Date(Math.min(...values));
+      const end = bounds && bounds[1] !== undefined 
+        ? new Date(bounds[1]) 
+        : new Date(Math.max(...values));
+  
+      let current = new Date(start);
+      while (current <= end) {
+        const existingDoc = group.find(doc => {
+          const docDate = new Date(doc[field]);
+          return docDate.getTime() === current.getTime();
+        });
+  
+        if (existingDoc) {
+          result.push(existingDoc);
+        } else {
+          const newDoc = {};
+          for (const partitionField of partitionByFields) {
+            newDoc[partitionField] = group[0][partitionField];
+          }
+          newDoc[field] = new Date(current);
+          result.push(newDoc);
+        }
+  
+        current = incrementValue(current);
+      }
+    }
+  
+    return result;
+  }
+
+  _facet(docs, facets) {
+    const result = {};
+    for (const [name, pipeline] of Object.entries(facets)) {
+      const facetAgg = new Aggregate(this.model, pipeline);
+      // Use a synchronous version of the pipeline execution
+      result[name] = this._executePipelineSync(docs, pipeline);
+    }
+    return result;
+  }
+  
+  _graphLookup(docs, options) {
+    // Input validation
+    if (!docs || !options) {
+      throw new Error('Invalid input: docs and options are required');
+    }
+
+    const {
+      from,                     // The collection to search
+      startWith,                // Initial field to start the recursion
+      connectFromField,         // Source field for connections
+      connectToField,           // Target field for connections
+      as,                       // Output array field
+      maxDepth = Infinity,      // Optional depth limit
+      depthField = null 
+    } = options;
+
+    // Additional validation
+    if (!from || !startWith || !connectFromField || !connectToField || !as) {
+      throw new Error('Missing required graph lookup parameters');
+    }
+
+    const foreignDocs = this.model._getCollection(from);
+    if (!foreignDocs) {
+      throw new Error(`Collection '${from}' not found`);
+    }
+
+    // Create an index for faster lookups
+    const connectionsMap = new Map();
+    foreignDocs.forEach(doc => {
+      const key = this._getFieldValue(doc, connectFromField);
+      if (!connectionsMap.has(key)) {
+        connectionsMap.set(key, []);
+      }
+      connectionsMap.get(key).push(doc);
+    });
+
+    const results = [];
+    const visitedDocs = new Set(); // To prevent circular references
+
+    const buildConnections = (doc, currentDepth = 0) => {
+      if (currentDepth > maxDepth) return [];
+
+      const valueToMatch = this._getFieldValue(doc, startWith);
+      const connectedDocs = connectionsMap.get(valueToMatch) || [];
+
+      const connections = connectedDocs.filter(connectedDoc => {
+        // Check if the connected doc matches the connectToField
+        const toFieldValue = this._getFieldValue(connectedDoc, connectToField);
+
+        // Prevent circular references
+        const docKey = JSON.stringify(connectedDoc);
+        if (visitedDocs.has(docKey)) return false;
+
+        return toFieldValue === valueToMatch;
+      }).map(connectedDoc => {
+        const resultDoc = { ...connectedDoc };
+        if (depthField) {
+          resultDoc[depthField] = currentDepth;
+        }
+
+        // Recursive call with depth tracking
+        resultDoc[as] = buildConnections(connectedDoc, currentDepth + 1);
+
+        const docKey = JSON.stringify(connectedDoc);
+        visitedDocs.delete(docKey);
+
+        return resultDoc;
+      });
+
+      return connections;
+    };
+
+    for (const doc of docs) {
+      visitedDocs.clear(); // Reset visited docs for each root document
+      doc[as] = buildConnections(doc);
+      results.push(doc);
+    }
+
+    return results;
+  }
+
+  _unionWith(docs, { coll, pipeline }) {
+    const additionalDocs = this.model._getCollection(coll);
+    const unionDocs = pipeline.length ? new Aggregate(this.model, pipeline).execSync(additionalDocs) : additionalDocs;
+    return [...docs, ...unionDocs];
+  }
+
+  _sortByCount(docs, field) {
+    const counts = docs.reduce((acc, doc) => {
+      const key = this._getFieldValue(doc, field);
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+
+    return Object.entries(counts)
+      .map(([key, count]) => ({ _id: key, count }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  // === Utility Methods ===
   _getFieldValue(doc, path) {
     if (!path) return doc;
     
@@ -467,80 +644,17 @@ class Aggregate {
     }
   }
 
-  _densify(docs, options) {
-    const { field, range, partitionByFields = [] } = options;
-  
-    if (!range || !field) {
-      throw new Error('$densify requires both a "field" and a "range" property.');
+  _groupByPartition(docs, partitionFields) {
+    const groups = {};
+    for (const doc of docs) {
+      const key = JSON.stringify(partitionFields.map(field => doc[field]));
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(doc);
     }
-  
-    const { step, unit, bounds } = range;
-  
-    // Helper function to increment based on unit
-    const incrementValue = (value) => {
-      switch (unit) {
-        case 'days':
-          return new Date(value.setDate(value.getDate() + step));
-        case 'hours':
-          return new Date(value.setHours(value.getHours() + step));
-        case 'minutes':
-          return new Date(value.setMinutes(value.getMinutes() + step));
-        default:
-          return value + step;
-      }
-    };
-  
-    const groups = partitionByFields.length
-      ? this._groupByPartition(docs, partitionByFields)
-      : { global: docs };
-  
-    const result = [];
-  
-    for (const group of Object.values(groups)) {
-      const values = group.map(doc => doc[field]).sort((a, b) => a - b);
-  
-      const start = bounds && bounds[0] !== undefined 
-        ? new Date(bounds[0]) 
-        : new Date(Math.min(...values));
-      const end = bounds && bounds[1] !== undefined 
-        ? new Date(bounds[1]) 
-        : new Date(Math.max(...values));
-  
-      let current = new Date(start);
-      while (current <= end) {
-        const existingDoc = group.find(doc => {
-          const docDate = new Date(doc[field]);
-          return docDate.getTime() === current.getTime();
-        });
-  
-        if (existingDoc) {
-          result.push(existingDoc);
-        } else {
-          const newDoc = {};
-          for (const partitionField of partitionByFields) {
-            newDoc[partitionField] = group[0][partitionField];
-          }
-          newDoc[field] = new Date(current);
-          result.push(newDoc);
-        }
-  
-        current = incrementValue(current);
-      }
-    }
-  
-    return result;
+    return groups;
   }
 
-  _facet(docs, facets) {
-    const result = {};
-    for (const [name, pipeline] of Object.entries(facets)) {
-      const facetAgg = new Aggregate(this.model, pipeline);
-      // Use a synchronous version of the pipeline execution
-      result[name] = this._executePipelineSync(docs, pipeline);
-    }
-    return result;
-  }
-  
+  // === Pipeline Execution Methods ===
   _executePipelineSync(docs, pipeline) {
     let result = [...docs];
     for (const stage of pipeline) {
@@ -855,6 +969,7 @@ class Aggregate {
     }
   }
 
+  // === Data Access Methods ===
   async _readCollectionData(collectionName) {
     try {
       const collection = await this.model._getCollection(collectionName);
@@ -864,158 +979,6 @@ class Aggregate {
       return [];
     }
   }
-
-  _densify(docs, options) {
-    const { field, range, partitionByFields = [] } = options;
-
-    if (!range || !field) {
-      throw new Error('$densify requires both a "field" and a "range" property.');
-    }
-
-    const { step, unit, bounds } = range;
-
-    // Group by partition fields (if any)
-    const groups = partitionByFields.length
-      ? this._groupByPartition(docs, partitionByFields)
-      : { global: docs };
-
-    const result = [];
-
-    for (const group of Object.values(groups)) {
-      const values = group.map(doc => doc[field]).sort((a, b) => a - b);
-
-      const start = bounds && bounds[0] !== undefined ? bounds[0] : Math.min(...values);
-      const end = bounds && bounds[1] !== undefined ? bounds[1] : Math.max(...values);
-
-      // Generate range values
-      for (let i = start; i <= end; i += step) {
-        const existingDoc = group.find(doc => doc[field] === i);
-        if (existingDoc) {
-          result.push(existingDoc);
-        } else {
-          const newDoc = {};
-          for (const field of partitionByFields) {
-            newDoc[field] = group[0][field];
-          }
-          newDoc[field] = i;
-          result.push(newDoc);
-        }
-      }
-    }
-
-    return result;
-  }
-
-  _groupByPartition(docs, partitionFields) {
-    const groups = {};
-    for (const doc of docs) {
-      const key = JSON.stringify(partitionFields.map(field => doc[field]));
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(doc);
-    }
-    return groups;
-  }
-
-  _graphLookup(docs, options) {
-    // Input validation
-    if (!docs || !options) {
-      throw new Error('Invalid input: docs and options are required');
-    }
-
-    const {
-      from,                     // The collection to search
-      startWith,                // Initial field to start the recursion
-      connectFromField,         // Source field for connections
-      connectToField,           // Target field for connections
-      as,                       // Output array field
-      maxDepth = Infinity,      // Optional depth limit
-      depthField = null 
-    } = options;
-
-    // Additional validation
-    if (!from || !startWith || !connectFromField || !connectToField || !as) {
-      throw new Error('Missing required graph lookup parameters');
-    }
-
-    const foreignDocs = this.model._getCollection(from);
-    if (!foreignDocs) {
-      throw new Error(`Collection '${from}' not found`);
-    }
-
-    // Create an index for faster lookups
-    const connectionsMap = new Map();
-    foreignDocs.forEach(doc => {
-      const key = this._getFieldValue(doc, connectFromField);
-      if (!connectionsMap.has(key)) {
-        connectionsMap.set(key, []);
-      }
-      connectionsMap.get(key).push(doc);
-    });
-
-    const results = [];
-    const visitedDocs = new Set(); // To prevent circular references
-
-    const buildConnections = (doc, currentDepth = 0) => {
-      if (currentDepth > maxDepth) return [];
-
-      const valueToMatch = this._getFieldValue(doc, startWith);
-      const connectedDocs = connectionsMap.get(valueToMatch) || [];
-
-      const connections = connectedDocs.filter(connectedDoc => {
-        // Check if the connected doc matches the connectToField
-        const toFieldValue = this._getFieldValue(connectedDoc, connectToField);
-
-        // Prevent circular references
-        const docKey = JSON.stringify(connectedDoc);
-        if (visitedDocs.has(docKey)) return false;
-
-        return toFieldValue === valueToMatch;
-      }).map(connectedDoc => {
-        const resultDoc = { ...connectedDoc };
-        if (depthField) {
-          resultDoc[depthField] = currentDepth;
-        }
-
-        // Recursive call with depth tracking
-        resultDoc[as] = buildConnections(connectedDoc, currentDepth + 1);
-
-        const docKey = JSON.stringify(connectedDoc);
-        visitedDocs.delete(docKey);
-
-        return resultDoc;
-      });
-
-      return connections;
-    };
-
-    for (const doc of docs) {
-      visitedDocs.clear(); // Reset visited docs for each root document
-      doc[as] = buildConnections(doc);
-      results.push(doc);
-    }
-
-    return results;
-  }
-
-
-  _unionWith(docs, { coll, pipeline }) {
-    const additionalDocs = this.model._getCollection(coll);
-    const unionDocs = pipeline.length ? new Aggregate(this.model, pipeline).execSync(additionalDocs) : additionalDocs;
-    return [...docs, ...unionDocs];
-  }
-
-  _sortByCount(docs, field) {
-    const counts = docs.reduce((acc, doc) => {
-      const key = this._getFieldValue(doc, field);
-      acc[key] = (acc[key] || 0) + 1;
-      return acc;
-    }, {});
-
-    return Object.entries(counts)
-      .map(([key, count]) => ({ _id: key, count }))
-      .sort((a, b) => b.count - a.count);
-  }
-
 }
 
 module.exports = { Aggregate };

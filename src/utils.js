@@ -2,6 +2,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const { ObjectId } = require('bson');
 
+// === File Operations ===
 async function readJSON(filePath, options = {}) {
   const { 
     defaultValue = [], 
@@ -62,6 +63,7 @@ async function writeJSON(filePath, data, options = {}) {
   }
 }
 
+// === Type Validation ===
 function validateType(value, type, options = {}) {
   const { 
     coerce = false,
@@ -104,6 +106,7 @@ function validateType(value, type, options = {}) {
   return true;
 }
 
+// === Output Formatting ===
 function formatOutput(obj, options = {}) {
   const { 
     seen = new WeakSet(),

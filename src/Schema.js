@@ -3,6 +3,7 @@ const { VirtualType } = require('./VirtualType.js');
 const { ObjectId } = require('bson');
 
 class Schema {
+  // === Core Functionality ===
   constructor(definition, options = {}) {
     this.definition = this._parseDefinition(definition);
     this.options = options;
@@ -36,6 +37,44 @@ class Schema {
     this._init();
   }
 
+  _init() {
+    for (const [path, options] of Object.entries(this.definition)) {
+      this._paths.set(path, this._createSchemaType(path, options));
+      if (options.required) {
+        this._requiredPaths.add(path);
+      }
+      if (options.index) {
+        this.index({ [path]: 1 });
+      }
+    }
+  }
+
+  _parseDefinition(definition) {
+    const parsed = {};
+    for (const [key, value] of Object.entries(definition)) {
+      if (typeof value === 'object' && !Array.isArray(value) && value !== null) {
+        if (value.type) {
+          parsed[key] = {
+            ...value,
+            isReference: value.type === Schema.Types.ObjectId && value.ref
+          };
+        } else {
+          parsed[key] = this._parseDefinition(value);
+        }
+      } else {
+        parsed[key] = { type: value };
+      }
+    }
+    return parsed;
+  }
+
+  _createSchemaType(path, options) {
+    const type = options.type || options;
+    const schemaTypeOptions = typeof options === 'object' ? options : {};
+    return new SchemaType(path, schemaTypeOptions, type);
+  }
+
+  // === Static Properties ===
   static get reserved() {
     return {
       _id: true,
@@ -88,37 +127,7 @@ class Schema {
     return ['2d', '2dsphere', 'hashed', 'text', 'unique', 'sparse', 'compound'];
   }
 
-  _parseDefinition(definition) {
-    const parsed = {};
-    for (const [key, value] of Object.entries(definition)) {
-      if (typeof value === 'object' && !Array.isArray(value) && value !== null) {
-        if (value.type) {
-          parsed[key] = {
-            ...value,
-            isReference: value.type === Schema.Types.ObjectId && value.ref
-          };
-        } else {
-          parsed[key] = this._parseDefinition(value);
-        }
-      } else {
-        parsed[key] = { type: value };
-      }
-    }
-    return parsed;
-  }
-
-  _init() {
-    for (const [path, options] of Object.entries(this.definition)) {
-      this._paths.set(path, this._createSchemaType(path, options));
-      if (options.required) {
-        this._requiredPaths.add(path);
-      }
-      if (options.index) {
-        this.index({ [path]: 1 });
-      }
-    }
-  }
-
+  // === Schema Modification Methods ===
   add(obj) {
     for (const [path, options] of Object.entries(obj)) {
       this.definition[path] = options;
@@ -130,6 +139,14 @@ class Schema {
     return this;
   }
 
+  remove(path) {
+    delete this.definition[path];
+    this._paths.delete(path);
+    this._requiredPaths.delete(path);
+    return this;
+  }
+
+  // === Schema Configuration ===
   alias(from, to) {
     this.virtual(from).get(function() {
       return this[to];
@@ -137,11 +154,23 @@ class Schema {
     return this;
   }
 
-  clearIndexes() {
-    this._indexes = [];
+  index(fields, options = {}) {
+    this._indexes.push([fields, options]);
     return this;
   }
 
+  path(path) {
+    return this._paths.get(path);
+  }
+
+  pathType(path) {
+    if (this._paths.has(path)) return 'real';
+    if (this.virtuals[path]) return 'virtual';
+    if (this.reserved[path]) return 'reserved';
+    return 'adhoc';
+  }
+
+  // === Schema Operations ===
   clone() {
     const clone = new Schema(this.definition, { ...this.options });
     clone.virtuals = { ...this.virtuals };
@@ -173,23 +202,50 @@ class Schema {
     return schema;
   }
 
-  eachPath(fn) {
-    this._paths.forEach((schemaType, path) => {
-      fn(path, schemaType);
-    });
-  }
-
-  get(key) {
-    return this.options[key];
-  }
-
-  index(fields, options = {}) {
-    this._indexes.push([fields, options]);
+  // === Middleware and Plugins ===
+  pre(action, fn) {
+    if (!this.middleware.pre[action]) {
+      this.middleware.pre[action] = [];
+    }
+    this.middleware.pre[action].push(fn);
     return this;
   }
 
-  indexes() {
-    return [...this._indexes];
+  post(action, fn) {
+    if (!this.middleware.post[action]) {
+      this.middleware.post[action] = [];
+    }
+    this.middleware.post[action].push(fn);
+    return this;
+  }
+
+  plugin(fn, opts) {
+    fn(this, opts || {});
+    this._plugins.add(fn);
+    return this;
+  }
+
+  // === Virtual Fields ===
+  virtual(name) {
+    if (!this.virtuals[name]) {
+      this.virtuals[name] = new VirtualType({ path: name });
+    }
+    return this.virtuals[name];
+  }
+
+  virtualpath(name) {
+    return this.virtuals[name];
+  }
+
+  // === Methods and Statics ===
+  method(name, fn) {
+    this.methods[name] = fn;
+    return this;
+  }
+
+  static(name, fn) {
+    this.statics[name] = fn;
+    return this;
   }
 
   loadClass(model) {
@@ -210,86 +266,11 @@ class Schema {
     return this;
   }
 
-  method(name, fn) {
-    this.methods[name] = fn;
-    return this;
-  }
-
-  omit(paths) {
-    const newSchema = this.clone();
-    paths = Array.isArray(paths) ? paths : [paths];
-    paths.forEach(path => {
-      newSchema.remove(path);
+  // === Schema Traversal ===
+  eachPath(fn) {
+    this._paths.forEach((schemaType, path) => {
+      fn(path, schemaType);
     });
-    return newSchema;
-  }
-
-  path(path) {
-    return this._paths.get(path);
-  }
-
-  pathType(path) {
-    if (this._paths.has(path)) return 'real';
-    if (this.virtuals[path]) return 'virtual';
-    if (this.reserved[path]) return 'reserved';
-    return 'adhoc';
-  }
-
-  pick(paths) {
-    const newSchema = new Schema({});
-    paths = Array.isArray(paths) ? paths : [paths];
-    paths.forEach(path => {
-      if (this._paths.has(path)) {
-        newSchema.add({ [path]: this.definition[path] });
-      }
-    });
-    return newSchema;
-  }
-
-  plugin(fn, opts) {
-    fn(this, opts || {});
-    this._plugins.add(fn);
-    return this;
-  }
-
-  post(action, fn) {
-    if (!this.middleware.post[action]) {
-      this.middleware.post[action] = [];
-    }
-    this.middleware.post[action].push(fn);
-    return this;
-  }
-
-  pre(action, fn) {
-    if (!this.middleware.pre[action]) {
-      this.middleware.pre[action] = [];
-    }
-    this.middleware.pre[action].push(fn);
-    return this;
-  }
-
-  queue(name, args) {
-    if (!this._queue) this._queue = new Map();
-    if (!this._queue.has(name)) this._queue.set(name, []);
-    this._queue.get(name).push(args);
-    return this;
-  }
-
-  remove(path) {
-    delete this.definition[path];
-    this._paths.delete(path);
-    this._requiredPaths.delete(path);
-    return this;
-  }
-
-  removeIndex(path) {
-    this._indexes = this._indexes.filter(([fields]) => !fields[path]);
-    return this;
-  }
-
-  removeVirtual(path) {
-    delete this.virtuals[path];
-    return this;
   }
 
   requiredPaths(invalidate = false) {
@@ -304,6 +285,16 @@ class Schema {
     return Array.from(this._requiredPaths);
   }
 
+  // === Index Management ===
+  indexes() {
+    return [...this._indexes];
+  }
+
+  clearIndexes() {
+    this._indexes = [];
+    return this;
+  }
+
   searchIndex(options = {}) {
     const index = {
       weights: options.weights || {},
@@ -315,55 +306,17 @@ class Schema {
     return this;
   }
 
+  // === Schema Options ===
+  get(key) {
+    return this.options[key];
+  }
+
   set(key, value) {
     this.options[key] = value;
     return this;
   }
 
-  static(name, fn) {
-    this.statics[name] = fn;
-    return this;
-  }
-
-  version(condition, versionKey = '__v') {
-    if (!this.options.versionKey) {
-      this.options.versionKey = versionKey;
-    }
-
-    this.pre('save', async function() {
-      const shouldVersion = typeof condition === 'function' 
-        ? await condition.call(this)
-        : true;
-      
-      if (shouldVersion) {
-        this[versionKey] = (this[versionKey] || 0) + 1;
-      }
-    });
-
-    return this;
-  }
-
-  virtual(name) {
-    if (!this.virtuals[name]) {
-      this.virtuals[name] = new VirtualType({ path: name });
-    }
-    return this.virtuals[name];
-  }
-
-  virtualpath(name) {
-    return this.virtuals[name];
-  }
-
-  get paths() {
-    return Object.fromEntries(this._paths);
-  }
-
-  _createSchemaType(path, options) {
-    const type = options.type || options;
-    const schemaTypeOptions = typeof options === 'object' ? options : {};
-    return new SchemaType(path, schemaTypeOptions, type);
-  }
-
+  // === Validation ===
   validate(data) {
     const errors = [];
     for (const [path, schemaType] of this._paths.entries()) {
@@ -384,6 +337,56 @@ class Schema {
       }
     }
     return errors;
+  }
+
+  // === Additional Methods ===
+  queue(name, args) {
+    if (!this._queue) this._queue = new Map();
+    if (!this._queue.has(name)) this._queue.set(name, []);
+    this._queue.get(name).push(args);
+    return this;
+  }
+
+  omit(paths) {
+    const newSchema = this.clone();
+    paths = Array.isArray(paths) ? paths : [paths];
+    paths.forEach(path => {
+      newSchema.remove(path);
+    });
+    return newSchema;
+  }
+
+  pick(paths) {
+    const newSchema = new Schema({});
+    paths = Array.isArray(paths) ? paths : [paths];
+    paths.forEach(path => {
+      if (this._paths.has(path)) {
+        newSchema.add({ [path]: this.definition[path] });
+      }
+    });
+    return newSchema;
+  }
+
+  version(condition, versionKey = '__v') {
+    if (!this.options.versionKey) {
+      this.options.versionKey = versionKey;
+    }
+
+    this.pre('save', async function() {
+      const shouldVersion = typeof condition === 'function' 
+        ? await condition.call(this)
+        : true;
+      
+      if (shouldVersion) {
+        this[versionKey] = (this[versionKey] || 0) + 1;
+      }
+    });
+
+    return this;
+  }
+
+  get paths() {
+    return Object.fromEntries(this._paths);
   }
 }
 

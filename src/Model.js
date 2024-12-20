@@ -8,6 +8,7 @@ const { EventEmitter } = require('events');
 const fs = require('fs-extra');
 
 class Model {
+  // === Core Functionality ===
   constructor(name, schema, connection) {
     this.name = name;
     this.schema = schema;
@@ -40,6 +41,21 @@ class Model {
     });
   }
 
+  async _initializeCollection() {
+    try {
+      await readJSON(this.collectionPath);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        await writeJSON(this.collectionPath, []);
+      }
+    }
+  }
+
+  async init() {
+    await this._initializeCollection();
+    return this;
+  }
+
   _getCollection(collectionName) {
     try {
       const collectionPath = path.join(this.connection.dbPath, `${collectionName}.json`);
@@ -50,13 +66,7 @@ class Model {
     }
   }
 
-  async _executeMiddleware(type, action, doc) {
-    const middlewares = this.schema.middleware[type][action] || [];
-    for (const middleware of middlewares) {
-      await middleware.call(doc);
-    }
-  }
-
+  // === CRUD Operations ===
   async _createOne(data) {
     const defaultedData = { ...data };
 
@@ -98,6 +108,225 @@ class Model {
     return new Document(newDoc, this.schema, this);
   }
 
+  async create(data) {
+    if (Array.isArray(data)) {
+      return Promise.all(data.map(item => this._createOne(item)));
+    }
+    return this._createOne(data);
+  }
+
+  async updateOne(conditions, update, options = {}) {
+    const docs = await readJSON(this.collectionPath);
+    const index = docs.findIndex(doc => this._matchQuery(doc, conditions));
+
+    if (index !== -1) {
+      const doc = this._applyUpdateOperators(docs[index], update, options);
+      await writeJSON(this.collectionPath, docs);
+      return { modifiedCount: 1, upsertedCount: 0 };
+    }
+
+    return { modifiedCount: 0, upsertedCount: 0 };
+  }
+
+  async updateMany(conditions, update, options = {}) {
+    const docs = await readJSON(this.collectionPath);
+    let modifiedCount = 0;
+
+    for (const doc of docs) {
+      if (this._matchQuery(doc, conditions)) {
+        this._applyUpdateOperators(doc, update, options);
+        modifiedCount++;
+      }
+    }
+
+    await writeJSON(this.collectionPath, docs);
+    return { modifiedCount, upsertedCount: 0 };
+  }
+
+  async deleteOne(conditions = {}) {
+    const docs = await readJSON(this.collectionPath);
+    const index = docs.findIndex(doc => this._matchQuery(doc, conditions));
+    if (index !== -1) {
+      docs.splice(index, 1);
+      await writeJSON(this.collectionPath, docs);
+      return { deletedCount: 1 };
+    }
+
+    return { deletedCount: 0 };
+  }
+
+  async deleteMany(conditions = {}) {
+    const docs = await readJSON(this.collectionPath);
+    const remaining = docs.filter(doc => !this._matchQuery(doc, conditions));
+    await writeJSON(this.collectionPath, remaining);
+    return { deletedCount: docs.length - remaining.length };
+  }
+
+  async replaceOne(conditions, doc, options = {}) {
+    const result = await this.updateOne(
+      conditions,
+      doc,
+      { ...options, overwrite: true }
+    );
+    return result;
+  }
+
+  async save() {
+    if (this._timestamps) {
+      this._doc.updatedAt = new Date();
+      if (this.isNew) {
+        this._doc.createdAt = new Date();
+      }
+    }
+
+    if (this._schema.middleware.pre.save) {
+      for (const middleware of this._schema.middleware.pre.save) {
+        await middleware.call(this);
+      }
+    }
+
+    const errors = await this.$validate();
+    if (errors.length > 0) {
+      throw new Error(errors.join(', '));
+    }
+
+    const result = await this._model.updateOne(
+      { _id: this._id },
+      this._doc
+    );
+
+    if (this._schema.middleware.post.save) {
+      for (const middleware of this._schema.middleware.post.save) {
+        await middleware.call(this);
+      }
+    }
+
+    this._isNew = false;
+    return result;
+  }
+
+  // === Query Operations ===
+  find(conditions = {}) {
+    return new Query(this, conditions);
+  }
+
+  findOne(conditions = {}) {
+    const query = new Query(this, conditions);
+    query._limit = 1;
+    return query;
+  }
+
+  async findById(id) {
+    const docs = await readJSON(this.collectionPath);
+    const doc = docs.find(doc => doc._id === id);
+    return doc ? new Document(doc, this.schema, this) : null;
+  }
+
+  async findOneAndDelete(conditions) {
+    const doc = await this.findOne(conditions);
+    if (doc) {
+      await this.deleteOne(conditions);
+    }
+    return doc;
+  }
+
+  async findOneAndReplace(conditions, replacement, options = {}) {
+    const doc = await this.findOne(conditions);
+    if (doc) {
+      Object.assign(doc, replacement);
+      await doc.save();
+    } else if (options.upsert) {
+      return this.create(replacement);
+    }
+    return doc;
+  }
+
+  async findOneAndUpdate(conditions, update, options = {}) {
+    const doc = await this.findOne(conditions);
+    if (doc) {
+      Object.assign(doc, update);
+      await doc.save();
+    } else if (options.upsert) {
+      return this.create({ ...conditions, ...update });
+    }
+    return doc;
+  }
+
+  async findByIdAndDelete(id) {
+    return this.findOneAndDelete({ _id: id });
+  }
+
+  async findByIdAndRemove(id) {
+    return this.findOneAndDelete({ _id: id });
+  }
+
+  async findByIdAndUpdate(id, update, options = {}) {
+    return this.findOneAndUpdate({ _id: id }, update, options);
+  }
+
+  // === Index Operations ===
+  async createIndexes(indexes = []) {
+    for (const [fields, options] of indexes) {
+      this._indexes.set(
+        Object.keys(fields).sort().join('_'),
+        { fields, options }
+      );
+    }
+    return indexes.length;
+  }
+
+  async cleanIndexes() {
+    this._indexes.clear();
+    return true;
+  }
+
+  async createSearchIndex(options = {}) {
+    this._searchIndexes.set(options.name || 'default', options);
+    return true;
+  }
+
+  async dropSearchIndex(name = 'default') {
+    return this._searchIndexes.delete(name);
+  }
+
+  async ensureIndexes() {
+    return this.createIndexes(Array.from(this._indexes.values()));
+  }
+
+  async diffIndexes() {
+    return {
+      toDrop: [],
+      toCreate: Array.from(this._indexes.values())
+    };
+  }
+
+  async listIndexes() {
+    return Array.from(this._indexes.values());
+  }
+
+  async listSearchIndexes() {
+    return Array.from(this._searchIndexes.values());
+  }
+
+  async syncIndexes() {
+    await this.cleanIndexes();
+    await this.ensureIndexes();
+    return this._indexes.size;
+  }
+
+  async updateSearchIndex(options = {}) {
+    const name = options.name || 'default';
+    if (this._searchIndexes.has(name)) {
+      this._searchIndexes.set(name, {
+        ...this._searchIndexes.get(name),
+        ...options
+      });
+      return true;
+    }
+    return false;
+  }
+
+  // === Document Operations ===
   async _find(conditions = {}) {
     const docs = await readJSON(this.collectionPath);
     return docs.filter(doc => this._matchQuery(doc, conditions));
@@ -150,33 +379,6 @@ class Model {
       }
       return doc[key] === value;
     });
-  }
-
-  async _initializeCollection() {
-    try {
-      await readJSON(this.collectionPath);
-    } catch (error) {
-      if (error.code === 'ENOENT') {
-        await writeJSON(this.collectionPath, []);
-      }
-    }
-  }
-
-  find(conditions = {}) {
-    return new Query(this, conditions);
-  }
-
-  async create(data) {
-    if (Array.isArray(data)) {
-      return Promise.all(data.map(item => this._createOne(item)));
-    }
-    return this._createOne(data);
-  }
-
-  findOne(conditions = {}) {
-    const query = new Query(this, conditions);
-    query._limit = 1;
-    return query;
   }
 
   _applyUpdateOperators(doc, update, options = {}) {
@@ -289,41 +491,133 @@ class Model {
     return doc;
    }
 
-  async updateOne(conditions, update, options = {}) {
-    const docs = await readJSON(this.collectionPath);
-    const index = docs.findIndex(doc => this._matchQuery(doc, conditions));
-
-    if (index !== -1) {
-      const doc = this._applyUpdateOperators(docs[index], update, options);
-      await writeJSON(this.collectionPath, docs);
-      return { modifiedCount: 1, upsertedCount: 0 };
+  async _executeMiddleware(type, action, doc) {
+    const middlewares = this.schema.middleware[type][action] || [];
+    for (const middleware of middlewares) {
+      await middleware.call(doc);
     }
-
-    return { modifiedCount: 0, upsertedCount: 0 };
   }
 
-  async updateMany(conditions, update, options = {}) {
-    const docs = await readJSON(this.collectionPath);
-    let modifiedCount = 0;
+  async _populateDoc(doc) {
+    const populatedDoc = new Document(doc._doc, this.schema, this.model);
+    
+    for (const populate of this._populate) {
+      const path = populate.path;
+      const pathSchema = this.model.schema._paths.get(path);
+      
+      if (pathSchema && pathSchema.options && pathSchema.options.ref) {
+        const refModel = this.model.db.models[pathSchema.options.ref];
+        if (!refModel) continue;
 
-    for (const doc of docs) {
-      if (this._matchQuery(doc, conditions)) {
-        this._applyUpdateOperators(doc, update, options);
-        modifiedCount++;
+        const value = doc[path];
+        if (!value) continue;
+
+        try {
+          const populatedValue = await refModel.findOne({ _id: value });
+          if (populatedValue) {
+            populatedDoc._populated.set(path, populatedValue);
+            populatedDoc[path] = populatedValue;
+          }
+        } catch (error) {
+          console.error(`Error populating ${path}:`, error);
+        }
       }
     }
-
-    await writeJSON(this.collectionPath, docs);
-    return { modifiedCount, upsertedCount: 0 };
+    
+    return populatedDoc;
   }
 
-  async deleteMany(conditions = {}) {
+  // === Backup Operations ===
+  async backup(backupPath) {
+    const defaultBackupPath = path.join(
+      path.dirname(this.collectionPath),
+      `${this.name}_backup_${new Date().toISOString().replace(/:/g, '-')}.json`
+    );
+
     const docs = await readJSON(this.collectionPath);
-    const remaining = docs.filter(doc => !this._matchQuery(doc, conditions));
-    await writeJSON(this.collectionPath, remaining);
-    return { deletedCount: docs.length - remaining.length };
+    await writeJSON(backupPath || defaultBackupPath, docs);
+    return backupPath || defaultBackupPath;
   }
 
+  async restore(backupPath) {
+    if (!backupPath) {
+      // Find the most recent backup file if no path is provided
+      const backupDir = path.dirname(this.collectionPath);
+      const backupFiles = await fs.readdir(backupDir);
+      const modelBackupFiles = backupFiles.filter(file =>
+        file.startsWith(`${this.name}_backup_`) && file.endsWith('.json')
+      );
+
+      if (modelBackupFiles.length === 0) {
+        throw new Error(`No backup files found for model: ${this.name}`);
+      }
+
+      // Sort backup files and get the most recent one
+      const mostRecentBackup = modelBackupFiles.sort().reverse()[0];
+      backupPath = path.join(backupDir, mostRecentBackup);
+    }
+
+    const backupDocs = await readJSON(backupPath);
+    await writeJSON(this.collectionPath, backupDocs);
+    return backupPath;
+  }
+
+  async listBackups() {
+    try {
+      const backupDir = path.dirname(this.collectionPath);
+      const backupFiles = await fs.readdir(backupDir);
+
+      // Filter backup files for this specific model
+      const modelBackups = backupFiles
+        .filter(file =>
+          file.startsWith(`${this.name}_backup_`) &&
+          file.endsWith('.json')
+        )
+        .map(filename => {
+          const fullPath = path.join(backupDir, filename);
+          const stats = fs.statSync(fullPath);
+
+          return {
+            filename,
+            path: fullPath,
+            createdAt: stats.birthtime,
+            size: stats.size // in bytes
+          };
+        })
+        // Sort from most recent to oldest
+        .sort((a, b) => b.createdAt - a.createdAt);
+
+      return modelBackups;
+    } catch (error) {
+      console.error('Error listing backups:', error);
+      return [];
+    }
+  }
+
+  async cleanupBackups(backedupFileName = null) {
+    const backups = await this.listBackups();
+
+    if (backedupFileName) {
+      // Find and delete specific backup
+      const backupToDelete = backups.find(backup => backup.filename === backedupFileName);
+
+      if (!backupToDelete) {
+        throw new Error(`Backup file '${backedupFileName}' not found`);
+      }
+
+      await fs.unlink(backupToDelete.path);
+      return [backupToDelete];
+    }
+
+    // Delete all backup files by default
+    for (const backup of backups) {
+      await fs.unlink(backup.path);
+    }
+
+    return [];
+  }
+
+  // === Utility Methods ===
   aggregate(pipeline = []) {
     return new Aggregate(this, pipeline);
   }
@@ -428,11 +722,6 @@ class Model {
     return castedObj;
   }
 
-  async cleanIndexes() {
-    this._indexes.clear();
-    return true;
-  }
-
   async countDocuments(conditions = {}) {
     const docs = await this._find(conditions);
     return docs.length;
@@ -441,28 +730,6 @@ class Model {
   async createCollection() {
     await this._initializeCollection();
     return this.collection;
-  }
-
-  async createIndexes(indexes = []) {
-    for (const [fields, options] of indexes) {
-      this._indexes.set(
-        Object.keys(fields).sort().join('_'),
-        { fields, options }
-      );
-    }
-    return indexes.length;
-  }
-
-  async createSearchIndex(options = {}) {
-    this._searchIndexes.set(options.name || 'default', options);
-    return true;
-  }
-
-  async diffIndexes() {
-    return {
-      toDrop: [],
-      toCreate: Array.from(this._indexes.values())
-    };
   }
 
   discriminator(name, schema) {
@@ -478,14 +745,6 @@ class Model {
     return [...new Set(docs.map(doc => doc[field]))];
   }
 
-  async dropSearchIndex(name = 'default') {
-    return this._searchIndexes.delete(name);
-  }
-
-  async ensureIndexes() {
-    return this.createIndexes(Array.from(this._indexes.values()));
-  }
-
   async estimatedDocumentCount() {
     const docs = await readJSON(this.collectionPath);
     return docs.length;
@@ -496,73 +755,8 @@ class Model {
     return doc !== null;
   }
 
-  async findById(id) {
-    const docs = await readJSON(this.collectionPath);
-    const doc = docs.find(doc => doc._id === id);
-    return doc ? new Document(doc, this.schema, this) : null;
-  }
-
-  async findByIdAndDelete(id) {
-    return this.findOneAndDelete({ _id: id });
-  }
-
-  async findByIdAndRemove(id) {
-    return this.findOneAndDelete({ _id: id });
-  }
-
-  async findByIdAndUpdate(id, update, options = {}) {
-    return this.findOneAndUpdate({ _id: id }, update, options);
-  }
-
-  async findOneAndDelete(conditions) {
-    const doc = await this.findOne(conditions);
-    if (doc) {
-      await this.deleteOne(conditions);
-    }
-    return doc;
-  }
-
-  async findOneAndReplace(conditions, replacement, options = {}) {
-    const doc = await this.findOne(conditions);
-    if (doc) {
-      Object.assign(doc, replacement);
-      await doc.save();
-    } else if (options.upsert) {
-      return this.create(replacement);
-    }
-    return doc;
-  }
-
-  async findOneAndUpdate(conditions, update, options = {}) {
-    const doc = await this.findOne(conditions);
-    if (doc) {
-      Object.assign(doc, update);
-      await doc.save();
-    } else if (options.upsert) {
-      return this.create({ ...conditions, ...update });
-    }
-    return doc;
-  }
-
-  async deleteOne(conditions = {}) {
-    const docs = await readJSON(this.collectionPath);
-    const index = docs.findIndex(doc => this._matchQuery(doc, conditions));
-    if (index !== -1) {
-      docs.splice(index, 1);
-      await writeJSON(this.collectionPath, docs);
-      return { deletedCount: 1 };
-    }
-
-    return { deletedCount: 0 };
-  }
-
   hydrate(obj) {
     return new Document(obj, this.schema, this);
-  }
-
-  async init() {
-    await this._initializeCollection();
-    return this;
   }
 
   async insertMany(docs, options = {}) {
@@ -573,14 +767,6 @@ class Model {
     return `Model { ${this.modelName} }`;
   }
 
-  async listIndexes() {
-    return Array.from(this._indexes.values());
-  }
-
-  async listSearchIndexes() {
-    return Array.from(this._searchIndexes.values());
-  }
-
   $model(name) {
     return this.db.model(name);
   }
@@ -588,15 +774,6 @@ class Model {
   async recompileSchema() {
     this.schema._init();
     return this;
-  }
-
-  async replaceOne(conditions, doc, options = {}) {
-    const result = await this.updateOne(
-      conditions,
-      doc,
-      { ...options, overwrite: true }
-    );
-    return result;
   }
 
   async increment(conditions, field, amount = 1) {
@@ -626,12 +803,6 @@ class Model {
     throw new Error('Sessions are not supported in file-based storage');
   }
 
-  async syncIndexes() {
-    await this.cleanIndexes();
-    await this.ensureIndexes();
-    return this._indexes.size;
-  }
-
   translateAliases(raw) {
     const translated = { ...raw };
     for (const [alias, path] of Object.entries(this.schema.aliases || {})) {
@@ -641,18 +812,6 @@ class Model {
       }
     }
     return translated;
-  }
-
-  async updateSearchIndex(options = {}) {
-    const name = options.name || 'default';
-    if (this._searchIndexes.has(name)) {
-      this._searchIndexes.set(name, {
-        ...this._searchIndexes.get(name),
-        ...options
-      });
-      return true;
-    }
-    return false;
   }
 
   async validate(obj) {
@@ -665,158 +824,6 @@ class Model {
 
   where(path) {
     return new Query(this).where(path);
-  }
-
-  async backup(backupPath) {
-    const defaultBackupPath = path.join(
-      path.dirname(this.collectionPath),
-      `${this.name}_backup_${new Date().toISOString().replace(/:/g, '-')}.json`
-    );
-
-    const docs = await readJSON(this.collectionPath);
-    await writeJSON(backupPath || defaultBackupPath, docs);
-    return backupPath || defaultBackupPath;
-  }
-
-  async restore(backupPath) {
-    if (!backupPath) {
-      // Find the most recent backup file if no path is provided
-      const backupDir = path.dirname(this.collectionPath);
-      const backupFiles = await fs.readdir(backupDir);
-      const modelBackupFiles = backupFiles.filter(file =>
-        file.startsWith(`${this.name}_backup_`) && file.endsWith('.json')
-      );
-
-      if (modelBackupFiles.length === 0) {
-        throw new Error(`No backup files found for model: ${this.name}`);
-      }
-
-      // Sort backup files and get the most recent one
-      const mostRecentBackup = modelBackupFiles.sort().reverse()[0];
-      backupPath = path.join(backupDir, mostRecentBackup);
-    }
-
-    const backupDocs = await readJSON(backupPath);
-    await writeJSON(this.collectionPath, backupDocs);
-    return backupPath;
-  }
-
-  async listBackups() {
-    try {
-      const backupDir = path.dirname(this.collectionPath);
-      const backupFiles = await fs.readdir(backupDir);
-
-      // Filter backup files for this specific model
-      const modelBackups = backupFiles
-        .filter(file =>
-          file.startsWith(`${this.name}_backup_`) &&
-          file.endsWith('.json')
-        )
-        .map(filename => {
-          const fullPath = path.join(backupDir, filename);
-          const stats = fs.statSync(fullPath);
-
-          return {
-            filename,
-            path: fullPath,
-            createdAt: stats.birthtime,
-            size: stats.size // in bytes
-          };
-        })
-        // Sort from most recent to oldest
-        .sort((a, b) => b.createdAt - a.createdAt);
-
-      return modelBackups;
-    } catch (error) {
-      console.error('Error listing backups:', error);
-      return [];
-    }
-  }
-
-  async cleanupBackups(backedupFileName = null) {
-    const backups = await this.listBackups();
-
-    if (backedupFileName) {
-      // Find and delete specific backup
-      const backupToDelete = backups.find(backup => backup.filename === backedupFileName);
-
-      if (!backupToDelete) {
-        throw new Error(`Backup file '${backedupFileName}' not found`);
-      }
-
-      await fs.unlink(backupToDelete.path);
-      return [backupToDelete];
-    }
-
-    // Delete all backup files by default
-    for (const backup of backups) {
-      await fs.unlink(backup.path);
-    }
-
-    return [];
-  }
-
-  async save() {
-    if (this._timestamps) {
-      this._doc.updatedAt = new Date();
-      if (this.isNew) {
-        this._doc.createdAt = new Date();
-      }
-    }
-
-    if (this._schema.middleware.pre.save) {
-      for (const middleware of this._schema.middleware.pre.save) {
-        await middleware.call(this);
-      }
-    }
-
-    const errors = await this.$validate();
-    if (errors.length > 0) {
-      throw new Error(errors.join(', '));
-    }
-
-    const result = await this._model.updateOne(
-      { _id: this._id },
-      this._doc
-    );
-
-    if (this._schema.middleware.post.save) {
-      for (const middleware of this._schema.middleware.post.save) {
-        await middleware.call(this);
-      }
-    }
-
-    this._isNew = false;
-    return result;
-  }
-
-  async _populateDoc(doc) {
-    const populatedDoc = new Document(doc._doc, this.schema, this.model);
-    
-    for (const populate of this._populate) {
-      const path = populate.path;
-      const pathSchema = this.model.schema._paths.get(path);
-      
-      if (pathSchema && pathSchema.options && pathSchema.options.ref) {
-        const refModel = this.model.db.models[pathSchema.options.ref];
-        if (!refModel) continue;
-
-        const value = doc[path];
-        if (!value) continue;
-
-        try {
-          const populatedValue = await refModel.findOne({ _id: value });
-          if (populatedValue) {
-            populatedDoc._populated.set(path, populatedValue);
-            populatedDoc[path] = populatedValue;
-          }
-        } catch (error) {
-          console.error(`Error populating ${path}:`, error);
-        }
-      }
-    }
-    
-    return populatedDoc;
   }
 }
 
