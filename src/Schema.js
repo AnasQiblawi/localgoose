@@ -59,7 +59,8 @@ class Schema {
         if (value.type) {
           parsed[key] = {
             ...value,
-            isReference: value.type === Schema.Types.ObjectId && value.ref
+            isReference: value.type === Schema.Types.ObjectId && value.ref,
+            validate: value.validate || null // Add support for custom validators
           };
         } else {
           parsed[key] = this._parseDefinition(value);
@@ -321,23 +322,46 @@ class Schema {
   }
 
   // === Validation ===
+  _validatePath(path, value) {
+    const schemaType = this._paths.get(path);
+    if (!schemaType) return null;
+
+    // Built-in validators
+    if (schemaType.options.required && value == null) {
+      return `${path} is required`;
+    }
+    if (schemaType.options.min != null && value < schemaType.options.min) {
+      return `${path} should be at least ${schemaType.options.min}`;
+    }
+    if (schemaType.options.max != null && value > schemaType.options.max) {
+      return `${path} should be at most ${schemaType.options.max}`;
+    }
+
+    // Custom validators
+    if (schemaType.options.validate) {
+      const validator = schemaType.options.validate;
+      if (typeof validator === 'function') {
+        const result = validator(value);
+        if (result !== true) {
+          return result || `${path} validation failed`;
+        }
+      } else if (typeof validator === 'object') {
+        if (!validator.validator(value)) {
+          return validator.message || `${path} validation failed`;
+        }
+      }
+    }
+
+    return null;
+  }
+
   validate(data) {
     const errors = [];
     for (const [path, schemaType] of this._paths.entries()) {
-      if (schemaType.required() && data[path] == null) {
-        errors.push(`${path} is required`);
-        continue;
-      }
-
-      if (data[path] != null) {
-        try {
-          const value = schemaType.cast(data[path]);
-          schemaType.doValidate(value, (err) => {
-            if (err) errors.push(err.message);
-          }, data);
-        } catch (err) {
-          errors.push(`${path} validation failed: ${err.message}`);
-        }
+      const value = data[path];
+      const error = this._validatePath(path, value);
+      if (error) {
+        errors.push(error);
       }
     }
     return errors;
