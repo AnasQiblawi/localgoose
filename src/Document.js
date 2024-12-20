@@ -299,11 +299,11 @@ class Document {
     return result;
   }
 
-  updateOne(update, options = {}) {
+  async updateOne(update, options = {}) {
     return this._model.updateOne({ _id: this._id }, update, options);
   }
 
-  replaceOne(replacement, options = {}) {
+  async replaceOne(replacement, options = {}) {
     return this._model.replaceOne({ _id: this._id }, replacement, options);
   }
 

@@ -109,6 +109,14 @@ class Aggregate {
         case '$sortByCount':
           docs = this._sortByCount(docs, operation);
           break;
+
+        case '$merge':
+          docs = await this._merge(docs, operation);
+          break;
+
+        case '$out':
+          docs = await this._out(docs, operation);
+          break;
       }
     }
 
@@ -125,6 +133,43 @@ class Aggregate {
       );
       return { ...doc, [as]: matches };
     });
+  }
+
+  async _merge(docs, operation) {
+    const { into, on, whenMatched, whenNotMatched } = operation;
+    const targetCollectionPath = path.join(this.model.connection.dbPath, `${into}.json`);
+    const targetDocs = await readJSON(targetCollectionPath);
+
+    const mergedDocs = docs.map(doc => {
+      const matchIndex = targetDocs.findIndex(targetDoc => targetDoc[on] === doc[on]);
+      if (matchIndex !== -1) {
+        switch (whenMatched) {
+          case 'replace':
+            targetDocs[matchIndex] = doc;
+            break;
+          case 'merge':
+            targetDocs[matchIndex] = { ...targetDocs[matchIndex], ...doc };
+            break;
+          case 'keepExisting':
+          default:
+            break;
+        }
+      } else {
+        if (whenNotMatched === 'insert') {
+          targetDocs.push(doc);
+        }
+      }
+      return doc;
+    });
+
+    await writeJSON(targetCollectionPath, targetDocs);
+    return mergedDocs;
+  }
+
+  async _out(docs, collection) {
+    const targetCollectionPath = path.join(this.model.connection.dbPath, `${collection}.json`);
+    await writeJSON(targetCollectionPath, docs);
+    return docs;
   }
 
   // === Pipeline Stage Methods ===

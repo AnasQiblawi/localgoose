@@ -1,6 +1,6 @@
 const { SchemaType } = require('./SchemaType.js');
 const { VirtualType } = require('./VirtualType.js');
-const { ObjectId } = require('bson');
+const { ObjectId, Decimal128 } = require('bson'); // Added Decimal128
 
 class Schema {
   // === Core Functionality ===
@@ -116,7 +116,7 @@ class Schema {
       Object: Object,
       ObjectId: ObjectId,
       Mixed: Object,
-      Decimal128: Number,
+      Decimal128: Decimal128,
       Map: Map,
       Buffer: Buffer,
       UUID: String,
