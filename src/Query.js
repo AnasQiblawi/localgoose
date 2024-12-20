@@ -789,6 +789,19 @@ class Query {
     this._sort.$natural = 1;
     return this;
   }
+
+  async findById(id) {
+    const docs = await this.model._find({ _id: id });
+    return docs[0] ? new Document(docs[0], this.model.schema, this.model) : null;
+  }
+
+  async findByIdAndUpdate(id, update, options = {}) {
+    return this.findOneAndUpdate({ _id: id }, update, options);
+  }
+
+  async findByIdAndDelete(id) {
+    return this.findOneAndDelete({ _id: id });
+  }
 }
 
 module.exports = { Query };
