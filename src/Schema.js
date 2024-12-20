@@ -56,7 +56,25 @@ class Schema {
     const parsed = {};
     for (const [key, value] of Object.entries(definition)) {
       if (typeof value === 'object' && !Array.isArray(value) && value !== null) {
-        if (value.type) {
+        if (value instanceof Schema) {
+          // Handle nested schema
+          parsed[key] = {
+            type: Object,
+            schema: value
+          };
+        } else if (value.type && value.type instanceof Schema) {
+          // Handle array of nested schemas
+          parsed[key] = {
+            ...value,
+            schema: value.type
+          };
+        } else if (value.type && Array.isArray(value.type)) {
+          // Handle array of subdocuments
+          parsed[key] = {
+            type: Array,
+            schema: new Schema(value.type[0])
+          };
+        } else if (value.type) {
           parsed[key] = {
             ...value,
             isReference: value.type === Schema.Types.ObjectId && value.ref,
@@ -209,6 +227,10 @@ class Schema {
 
   // === Middleware and Plugins ===
   pre(action, fn) {
+    const validHooks = ['init', 'validate', 'save', 'remove', 'deleteOne', 'deleteMany'];
+    if (!validHooks.includes(action)) {
+      throw new Error(`Invalid hook: ${action}. Valid hooks are: ${validHooks.join(', ')}`);
+    }
     if (!this.middleware.pre[action]) {
       this.middleware.pre[action] = [];
     }
@@ -217,6 +239,10 @@ class Schema {
   }
 
   post(action, fn) {
+    const validHooks = ['init', 'validate', 'save', 'remove', 'deleteOne', 'deleteMany'];
+    if (!validHooks.includes(action)) {
+      throw new Error(`Invalid hook: ${action}. Valid hooks are: ${validHooks.join(', ')}`);
+    }
     if (!this.middleware.post[action]) {
       this.middleware.post[action] = [];
     }

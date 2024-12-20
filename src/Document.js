@@ -59,6 +59,8 @@ class Document {
         });
       }
     });
+
+    this.$versioningInit();
   }
 
   // === Document State Management ===
@@ -448,6 +450,42 @@ class Document {
 
   get $where() {
     return this._where;
+  }
+
+  // === Versioning Methods ===
+  $versioningInit() {
+    if (this._schema.options.versionKey) {
+      this._doc.__v = 0;
+      this._lastVersion = 0;
+    }
+  }
+
+  $incVersion() {
+    if (this._schema.options.versionKey) {
+      this._doc.__v = (this._doc.__v || 0) + 1;
+      this._lastVersion = this._doc.__v;
+    }
+  }
+
+  $checkVersion() {
+    if (this._schema.options.versionKey && this._lastVersion !== this._doc.__v) {
+      throw new Error('VersionError: Document has been modified since retrieval');
+    }
+  }
+
+  // Enhanced change tracking
+  $isSelected(path) {
+    if (!this._selected) return true;
+    return this._selected.has(path);
+  }
+
+  $isEmpty(path) {
+    const val = this.get(path);
+    if (val === null || val === undefined) return true;
+    if (Array.isArray(val)) return val.length === 0;
+    if (typeof val === 'object') return Object.keys(val).length === 0;
+    if (typeof val === 'string') return val.trim().length === 0;
+    return false;
   }
 }
 
