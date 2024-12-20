@@ -25,6 +25,14 @@ class SchemaType {
     this._match = null;
     this._validate = null;
 
+    this._isArray = false;
+    this._arrayType = null;
+
+    if (Array.isArray(instance)) {
+      this._isArray = true;
+      this._arrayType = instance[0];
+    }
+
     if (options.required) {
       this.required(options.required);
     }
@@ -209,6 +217,13 @@ class SchemaType {
       return val;
     }
 
+    if (this._isArray) {
+      if (!Array.isArray(val)) {
+        throw new Error(`${this.path} must be an array`);
+      }
+      return val.map(item => this._castArrayItem(item));
+    }
+
     // Type-specific casting
     switch (this.instance) {
       case String:
@@ -259,6 +274,13 @@ class SchemaType {
     }
 
     return value;
+  }
+
+  _castArrayItem(item) {
+    if (this._arrayType instanceof SchemaType) {
+      return this._arrayType.cast(item);
+    }
+    return item;
   }
 
   castFunction() {

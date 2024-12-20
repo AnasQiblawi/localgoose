@@ -31,6 +31,7 @@ class Query {
     this._writeConcern = {};
     this._readConcern = null;
     this._transform = null;
+    this._conditions = conditions;  // Add this line
   }
 
   $where(js) {
@@ -189,7 +190,7 @@ class Query {
       throw this._error;
     }
 
-    let docs = await this.model._find(this.conditions);
+    let docs = await this.model._find(this._conditions || this.conditions);
     
     if (Object.keys(this._sort).length > 0) {
       docs.sort((a, b) => {
@@ -210,20 +211,22 @@ class Query {
     }
 
     if (this._lean) {
-      return docs;
+      return this._limit === 1 ? docs[0] : docs;
     }
 
     const documents = docs.map(doc => new Document(doc, this.model.schema, this.model));
     
     if (this._populate.length > 0) {
-      return Promise.all(documents.map(doc => this._populateDoc(doc)));
+      const populatedDocs = await Promise.all(documents.map(doc => this._populateDoc(doc)));
+      return this._limit === 1 ? populatedDocs[0] : populatedDocs;
     }
 
     if (this._transform) {
-      return documents.map(this._transform);
+      const transformedDocs = documents.map(this._transform);
+      return this._limit === 1 ? transformedDocs[0] : transformedDocs;
     }
 
-    return documents;
+    return this._limit === 1 ? documents[0] : documents;
   }
 
   exists(path, val = true) {
@@ -245,7 +248,7 @@ class Query {
   }
 
   find(conditions = {}) {
-    Object.assign(this.conditions, conditions);
+    Object.assign(this._conditions, conditions);
     return this;
   }
 
@@ -709,25 +712,38 @@ class Query {
     const populatedDoc = new Document(doc._doc, this.model.schema, this.model);
     
     for (const populate of this._populate) {
-      const path = populate.path;
-      const pathSchema = this.model.schema._paths.get(path);
+      const pathSegments = populate.path.split('.');
+      let currentDoc = populatedDoc;
+      let currentPath = '';
       
-      if (pathSchema && pathSchema.options && pathSchema.options.ref) {
-        const refModel = this.model.db.models[pathSchema.options.ref];
-        if (!refModel) continue;
+      for (const segment of pathSegments) {
+        currentPath = currentPath ? `${currentPath}.${segment}` : segment;
+        const pathSchema = this.model.schema._paths.get(currentPath);
+        
+        if (pathSchema && pathSchema.options && pathSchema.options.ref) {
+          const refModel = this.model.db.models[pathSchema.options.ref];
+          if (!refModel) continue;
 
-        const value = doc[path];
-        if (!value) continue;
+          const value = currentDoc[segment];
+          if (!value) continue;
 
-        try {
-          const populatedValue = await refModel.findOne({ _id: value });
-          if (populatedValue) {
-            populatedDoc._populated.set(path, populatedValue);
-            populatedDoc[path] = populatedValue;
+          try {
+            if (Array.isArray(value)) {
+              const populatedValues = await Promise.all(
+                value.map(id => refModel.findOne({ _id: id }))
+              );
+              currentDoc[segment] = populatedValues.filter(Boolean);
+            } else {
+              const populatedValue = await refModel.findOne({ _id: value });
+              if (populatedValue) {
+                currentDoc[segment] = populatedValue;
+              }
+            }
+          } catch (error) {
+            console.error(`Error populating ${currentPath}:`, error);
           }
-        } catch (error) {
-          console.error(`Error populating ${path}:`, error);
         }
+        currentDoc = currentDoc[segment];
       }
     }
     

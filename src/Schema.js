@@ -78,7 +78,9 @@ class Schema {
       Map: Map,
       Buffer: Buffer,
       UUID: String,
-      BigInt: BigInt
+      BigInt: BigInt,
+      Subdocument: Object,
+      Embedded: Object
     };
   }
 
@@ -245,7 +247,7 @@ class Schema {
   }
 
   plugin(fn, opts) {
-    fn(this, opts);
+    fn(this, opts || {});
     this._plugins.add(fn);
     return this;
   }
@@ -320,6 +322,24 @@ class Schema {
 
   static(name, fn) {
     this.statics[name] = fn;
+    return this;
+  }
+
+  version(condition, versionKey = '__v') {
+    if (!this.options.versionKey) {
+      this.options.versionKey = versionKey;
+    }
+
+    this.pre('save', async function() {
+      const shouldVersion = typeof condition === 'function' 
+        ? await condition.call(this)
+        : true;
+      
+      if (shouldVersion) {
+        this[versionKey] = (this[versionKey] || 0) + 1;
+      }
+    });
+
     return this;
   }
 

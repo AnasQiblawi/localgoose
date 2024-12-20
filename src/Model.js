@@ -50,6 +50,13 @@ class Model {
     }
   }
 
+  async _executeMiddleware(type, action, doc) {
+    const middlewares = this.schema.middleware[type][action] || [];
+    for (const middleware of middlewares) {
+      await middleware.call(doc);
+    }
+  }
+
   async _createOne(data) {
     const defaultedData = { ...data };
 
@@ -64,16 +71,14 @@ class Model {
       }
     }
 
+    await this._executeMiddleware('pre', 'validate', defaultedData);
     const errors = this.schema.validate(defaultedData);
     if (errors.length > 0) {
       throw new Error(errors.join(', '));
     }
+    await this._executeMiddleware('post', 'validate', defaultedData);
 
-    if (this.schema.middleware.pre.save) {
-      for (const middleware of this.schema.middleware.pre.save) {
-        await middleware.call(defaultedData);
-      }
-    }
+    await this._executeMiddleware('pre', 'save', defaultedData);
 
     const docs = await readJSON(this.collectionPath);
     const now = new Date();
@@ -88,11 +93,7 @@ class Model {
     docs.push(newDoc);
     await writeJSON(this.collectionPath, docs);
 
-    if (this.schema.middleware.post.save) {
-      for (const middleware of this.schema.middleware.post.save) {
-        await middleware.call(newDoc);
-      }
-    }
+    await this._executeMiddleware('post', 'save', newDoc);
 
     return new Document(newDoc, this.schema, this);
   }
@@ -173,7 +174,9 @@ class Model {
   }
 
   findOne(conditions = {}) {
-    return new Query(this, conditions);
+    const query = new Query(this, conditions);
+    query._limit = 1;
+    return query;
   }
 
   _applyUpdateOperators(doc, update, options = {}) {
@@ -496,7 +499,7 @@ class Model {
   async findById(id) {
     const docs = await readJSON(this.collectionPath);
     const doc = docs.find(doc => doc._id === id);
-    return new Document(doc, this.schema, this);
+    return doc ? new Document(doc, this.schema, this) : null;
   }
 
   async findByIdAndDelete(id) {
