@@ -328,6 +328,14 @@ const main = async () => {
     const updatedPost1 = await Post.findByIdAndUpdate(post1._id, { likes: 20 }, { new: true });
     logOutput('Updated Post1 likes:', updatedPost1);
 
+    // Demonstrate populate method
+    console.log('\n--- Populating Author in Posts ---');
+    const populatedPost1 = await Post.findOne({ _id: post1._id }).populate('author').exec();
+    logOutput('Populated post1:', populatedPost1);
+
+    const populatedPost2 = await Post.findOne({ _id: post2._id }).populate('author').exec();
+    logOutput('Populated post2:', populatedPost2);
+
     // Clean up: Delete all records before disconnecting
     console.log('\n--- Cleaning up Database ---');
     await User.deleteMany({});

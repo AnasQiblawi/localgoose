@@ -172,9 +172,8 @@ class Model {
     return this._createOne(data);
   }
 
-  async findOne(conditions = {}) {
-    const docs = await this._find(conditions);
-    return docs[0] ? new Document(docs[0], this.schema, this) : null;
+  findOne(conditions = {}) {
+    return new Query(this, conditions);
   }
 
   _applyUpdateOperators(doc, update, options = {}) {
@@ -495,7 +494,9 @@ class Model {
   }
 
   async findById(id) {
-    return this.findOne({ _id: id });
+    const docs = await readJSON(this.collectionPath);
+    const doc = docs.find(doc => doc._id === id);
+    return new Document(doc, this.schema, this);
   }
 
   async findByIdAndDelete(id) {
@@ -784,6 +785,35 @@ class Model {
 
     this._isNew = false;
     return result;
+  }
+
+  async _populateDoc(doc) {
+    const populatedDoc = new Document(doc._doc, this.schema, this.model);
+    
+    for (const populate of this._populate) {
+      const path = populate.path;
+      const pathSchema = this.model.schema._paths.get(path);
+      
+      if (pathSchema && pathSchema.options && pathSchema.options.ref) {
+        const refModel = this.model.db.models[pathSchema.options.ref];
+        if (!refModel) continue;
+
+        const value = doc[path];
+        if (!value) continue;
+
+        try {
+          const populatedValue = await refModel.findOne({ _id: value });
+          if (populatedValue) {
+            populatedDoc._populated.set(path, populatedValue);
+            populatedDoc[path] = populatedValue;
+          }
+        } catch (error) {
+          console.error(`Error populating ${path}:`, error);
+        }
+      }
+    }
+    
+    return populatedDoc;
   }
 }
 
