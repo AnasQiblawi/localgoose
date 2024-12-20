@@ -206,13 +206,20 @@ class Model {
   }
 
   // === Query Operations ===
-  find(conditions = {}) {
-    return new Query(this, conditions);
+  find(conditions = {}, options = {}) {
+    const query = new Query(this, conditions);
+    if (options.lean) {
+      query.lean();
+    }
+    return query;
   }
 
-  findOne(conditions = {}) {
+  findOne(conditions = {}, options = {}) {
     const query = new Query(this, conditions);
     query._limit = 1;
+    if (options.lean) {
+      query.lean();
+    }
     return query;
   }
 
@@ -498,20 +505,16 @@ class Model {
     }
   }
 
-  async _populateDoc(doc) {
-    const populatedDoc = new Document(doc._doc, this.schema, this.model);
-    
-    for (const populate of this._populate) {
+  async _populateDoc(doc, populateOptions) {
+    const populatedDoc = new Document(doc._doc, this.schema, this);
+    for (const populate of populateOptions) {
       const path = populate.path;
-      const pathSchema = this.model.schema._paths.get(path);
-      
+      const pathSchema = this.schema.path(path);
       if (pathSchema && pathSchema.options && pathSchema.options.ref) {
-        const refModel = this.model.db.models[pathSchema.options.ref];
+        const refModel = this.db.model(pathSchema.options.ref);
         if (!refModel) continue;
-
         const value = doc[path];
         if (!value) continue;
-
         try {
           const populatedValue = await refModel.findOne({ _id: value });
           if (populatedValue) {
@@ -523,7 +526,6 @@ class Model {
         }
       }
     }
-    
     return populatedDoc;
   }
 

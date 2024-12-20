@@ -76,18 +76,7 @@ class Aggregate {
           break;
         
         case '$lookup':
-          docs = docs.map(doc => {
-            const { from, localField, foreignField, as } = operation;
-            
-            // Assume we have access to another model/collection
-            const foreignDocs = this.model._getCollection(from);
-            
-            doc[as] = foreignDocs.filter(foreignDoc =>
-              foreignDoc[foreignField] === doc[localField]
-            );
-
-            return doc;
-          });
+          docs = await this._lookup(docs, operation);
           break;
 
         case '$addFields':
@@ -124,6 +113,18 @@ class Aggregate {
     }
 
     return docs;
+  }
+
+  async _lookup(docs, operation) {
+    const { from, localField, foreignField, as } = operation;
+    const foreignDocs = await this.model._getCollection(from);
+    return docs.map(doc => {
+      const localValue = this._getFieldValue(doc, localField);
+      const matches = foreignDocs.filter(foreignDoc => 
+        String(this._getFieldValue(foreignDoc, foreignField)) === String(localValue)
+      );
+      return { ...doc, [as]: matches };
+    });
   }
 
   // === Pipeline Stage Methods ===

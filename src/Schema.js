@@ -34,6 +34,9 @@ class Schema {
       this.definition.__v = { type: Number, default: 0 };
     }
 
+    this.strict = options.strict !== undefined ? options.strict : true;
+    this.minimize = options.minimize !== undefined ? options.minimize : true;
+
     this._init();
   }
 
@@ -155,7 +158,8 @@ class Schema {
   }
 
   index(fields, options = {}) {
-    this._indexes.push([fields, options]);
+    const index = { fields, options };
+    this._indexes.push(index);
     return this;
   }
 
@@ -387,6 +391,18 @@ class Schema {
 
   get paths() {
     return Object.fromEntries(this._paths);
+  }
+
+  toObject(options = {}) {
+    const obj = { ...this._doc };
+    if (this.minimize) {
+      for (const key in obj) {
+        if (obj[key] === undefined) {
+          delete obj[key];
+        }
+      }
+    }
+    return obj;
   }
 }
 

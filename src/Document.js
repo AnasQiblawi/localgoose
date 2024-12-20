@@ -400,23 +400,25 @@ class Document {
   }
 
   // === Serialization Methods ===
-  toJSON() {
-    return this.toObject();
-  }
-
   toObject(options = {}) {
     const obj = { ...this._doc };
-    
-    // Handle populated fields
-    for (const [path, value] of this._populated.entries()) {
-      if (value instanceof Document) {
-        obj[path] = value.toObject(options);
-      } else {
-        obj[path] = value;
+    if (options.minimize) {
+      for (const key in obj) {
+        if (obj[key] === undefined) {
+          delete obj[key];
+        }
       }
     }
-
+    if (options.virtuals) {
+      for (const [path, virtual] of Object.entries(this._schema.virtuals)) {
+        obj[path] = virtual.applyGetters(undefined, this);
+      }
+    }
     return obj;
+  }
+
+  toJSON(options = {}) {
+    return this.toObject(options);
   }
 
   toString() {
