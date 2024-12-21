@@ -1,3 +1,6 @@
+const { readJSON } = require('./utils.js');
+const path = require('path');
+
 class Aggregate {
   // === Core Functionality ===
   constructor(model, pipeline = []) {
