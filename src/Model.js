@@ -121,6 +121,7 @@ class Model {
 
     if (index !== -1) {
       const doc = this._applyUpdateOperators(docs[index], update, options);
+      docs[index] = doc; // Ensure the updated document is saved back to the array
       await writeJSON(this.collectionPath, docs);
       return { modifiedCount: 1, upsertedCount: 0 };
     }
@@ -132,9 +133,9 @@ class Model {
     const docs = await readJSON(this.collectionPath);
     let modifiedCount = 0;
 
-    for (const doc of docs) {
-      if (this._matchQuery(doc, conditions)) {
-        this._applyUpdateOperators(doc, update, options);
+    for (let i = 0; i < docs.length; i++) {
+      if (this._matchQuery(docs[i], conditions)) {
+        docs[i] = this._applyUpdateOperators(docs[i], update, options);
         modifiedCount++;
       }
     }
@@ -249,14 +250,20 @@ class Model {
   }
 
   async findOneAndUpdate(conditions, update, options = {}) {
-    const doc = await this.findOne(conditions);
-    if (doc) {
-      Object.assign(doc, update);
-      await doc.save();
+    const docs = await readJSON(this.collectionPath);
+    const index = docs.findIndex(doc => this._matchQuery(doc, conditions));
+
+    if (index !== -1) {
+      const doc = this._applyUpdateOperators(docs[index], update, options);
+      docs[index] = doc; // Ensure the updated document is saved back to the array
+      await writeJSON(this.collectionPath, docs);
+      return new Document(doc, this.schema, this);
     } else if (options.upsert) {
-      return this.create({ ...conditions, ...update });
+      const newDoc = await this._createOne({ ...conditions, ...update });
+      return newDoc;
     }
-    return doc;
+
+    return null;
   }
 
   async findByIdAndDelete(id) {
@@ -389,102 +396,106 @@ class Model {
   }
 
   _applyUpdateOperators(doc, update, options = {}) {
-    // const now = new Date();
-    
-    for (const [key, value] of Object.entries(update)) {
-      switch (key) {
-        case '$set':
-          Object.assign(doc, value);
-          break;
-        case '$unset':
-          Object.keys(value).forEach(field => delete doc[field]);
-          break;
-        case '$inc':
-          Object.entries(value).forEach(([field, amount]) => {
-            doc[field] = (doc[field] || 0) + amount;
-          });
-          break;
-        case '$mul':
-          Object.entries(value).forEach(([field, factor]) => {
-            doc[field] = (doc[field] || 0) * factor;
-          });
-          break;
-        case '$min':
-          Object.entries(value).forEach(([field, limit]) => {
-            doc[field] = Math.min(doc[field] || Infinity, limit);
-          });
-          break;
-        case '$max':
-          Object.entries(value).forEach(([field, limit]) => {
-            doc[field] = Math.max(doc[field] || -Infinity, limit);
-          });
-          break;
-        case '$rename':
-          Object.entries(value).forEach(([oldField, newField]) => {
-            if (doc[oldField] !== undefined) {
-              doc[newField] = doc[oldField];
-              delete doc[oldField];
-            }
-          });
-          break;
-        case '$currentDate':
-          Object.entries(value).forEach(([field, typeSpec]) => {
-            doc[field] = typeSpec === true || typeSpec.$type === 'date' 
-              ? new Date() 
-              : Date.now();
-          });
-          break;
-        case '$setOnInsert':
-          if (options.upsert) {
+    // First handle direct updates (when update doesn't use operators)
+    if (!update.$set && !Object.keys(update).some(key => key.startsWith('$'))) {
+      Object.assign(doc, update);
+    } else {
+      // Handle operator updates
+      for (const [key, value] of Object.entries(update)) {
+        switch (key) {
+          case '$set':
             Object.assign(doc, value);
-          }
-          break;
-        case '$push':
-          Object.entries(value).forEach(([field, item]) => {
-            if (!Array.isArray(doc[field])) doc[field] = [];
-            doc[field].push(item);
-          });
-          break;
-        case '$pull':
-          Object.entries(value).forEach(([field, query]) => {
-            if (Array.isArray(doc[field])) {
-              doc[field] = doc[field].filter(item => 
-                !this._matchQuery({ item }, { item: query })
-              );
+            break;
+          case '$unset':
+            Object.keys(value).forEach(field => delete doc[field]);
+            break;
+          case '$inc':
+            Object.entries(value).forEach(([field, amount]) => {
+              doc[field] = (doc[field] || 0) + amount;
+            });
+            break;
+          case '$mul':
+            Object.entries(value).forEach(([field, factor]) => {
+              doc[field] = (doc[field] || 0) * factor;
+            });
+            break;
+          case '$min':
+            Object.entries(value).forEach(([field, limit]) => {
+              doc[field] = Math.min(doc[field] || Infinity, limit);
+            });
+            break;
+          case '$max':
+            Object.entries(value).forEach(([field, limit]) => {
+              doc[field] = Math.max(doc[field] || -Infinity, limit);
+            });
+            break;
+          case '$rename':
+            Object.entries(value).forEach(([oldField, newField]) => {
+              if (doc[oldField] !== undefined) {
+                doc[newField] = doc[oldField];
+                delete doc[oldField];
+              }
+            });
+            break;
+          case '$currentDate':
+            Object.entries(value).forEach(([field, typeSpec]) => {
+              doc[field] = typeSpec === true || typeSpec.$type === 'date' 
+                ? new Date() 
+                : Date.now();
+            });
+            break;
+          case '$setOnInsert':
+            if (options.upsert) {
+              Object.assign(doc, value);
             }
-          });
-          break;
-        case '$addToSet':
-          Object.entries(value).forEach(([field, item]) => {
-            if (!Array.isArray(doc[field])) doc[field] = [];
-            if (!doc[field].includes(item)) {
+            break;
+          case '$push':
+            Object.entries(value).forEach(([field, item]) => {
+              if (!Array.isArray(doc[field])) doc[field] = [];
               doc[field].push(item);
-            }
-          });
-          break;
-        case '$pop':
-          Object.entries(value).forEach(([field, pos]) => {
-            if (Array.isArray(doc[field])) {
-              pos === -1 ? doc[field].shift() : doc[field].pop();
-            }
-          });
-          break;
-        case '$pullAll':
-          Object.entries(value).forEach(([field, items]) => {
-            if (Array.isArray(doc[field])) {
-              doc[field] = doc[field].filter(item => !items.includes(item));
-            }
-          });
-          break;
-        case '$bit':
-          Object.entries(value).forEach(([field, ops]) => {
-            if (typeof doc[field] === 'number') {
-              if (ops.and !== undefined) doc[field] &= ops.and;
-              if (ops.or !== undefined) doc[field] |= ops.or;
-              if (ops.xor !== undefined) doc[field] ^= ops.xor;
-            }
-          });
-          break;
+            });
+            break;
+          case '$pull':
+            Object.entries(value).forEach(([field, query]) => {
+              if (Array.isArray(doc[field])) {
+                doc[field] = doc[field].filter(item => 
+                  !this._matchQuery({ item }, { item: query })
+                );
+              }
+            });
+            break;
+          case '$addToSet':
+            Object.entries(value).forEach(([field, item]) => {
+              if (!Array.isArray(doc[field])) doc[field] = [];
+              if (!doc[field].includes(item)) {
+                doc[field].push(item);
+              }
+            });
+            break;
+          case '$pop':
+            Object.entries(value).forEach(([field, pos]) => {
+              if (Array.isArray(doc[field])) {
+                pos === -1 ? doc[field].shift() : doc[field].pop();
+              }
+            });
+            break;
+          case '$pullAll':
+            Object.entries(value).forEach(([field, items]) => {
+              if (Array.isArray(doc[field])) {
+                doc[field] = doc[field].filter(item => !items.includes(item));
+              }
+            });
+            break;
+          case '$bit':
+            Object.entries(value).forEach(([field, ops]) => {
+              if (typeof doc[field] === 'number') {
+                if (ops.and !== undefined) doc[field] &= ops.and;
+                if (ops.or !== undefined) doc[field] |= ops.or;
+                if (ops.xor !== undefined) doc[field] ^= ops.xor;
+              }
+            });
+            break;
+        }
       }
     }
     
@@ -494,9 +505,8 @@ class Model {
     }
 
     this.applyTimestamps(doc);
-    // doc.updatedAt = now;
     return doc;
-   }
+  }
 
   async _executeMiddleware(type, action, doc) {
     const middlewares = this.schema.middleware[type][action] || [];

@@ -1442,6 +1442,12 @@ class Query {
     this.conditions.$text = { $search: search };
     return this;
   }
+  
+  paginate(page = 1, limit = 10) {
+    this._skip = (page - 1) * limit;
+    this._limit = limit;
+    return this;
+  }
 }
 
 module.exports = { Query };
