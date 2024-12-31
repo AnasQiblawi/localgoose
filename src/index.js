@@ -5,7 +5,7 @@ const localgoose = {
   Schema,
   Connection,
   createConnection: (dbPath) => new Connection(dbPath),
-  connect: async (dbPath) => {
+  connect: (dbPath) => {
     const connection = new Connection(dbPath);
     return connection.connect();
   }

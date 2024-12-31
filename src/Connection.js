@@ -1,4 +1,4 @@
-const fs = require('fs/promises');
+const fs = require('fs-extra');
 const path = require('path');
 const { Model } = require('./Model.js');
 const { EventEmitter } = require('events');
@@ -20,10 +20,10 @@ class Connection {
     this.pass = null;
   }
 
-  async connect() {
+  connect() {
     try {
       this.readyState = 2;
-      await fs.mkdir(this.dbPath, { recursive: true });
+      fs.mkdirSync(this.dbPath, { recursive: true });
       this.readyState = 1;
       return this;
     } catch (error) {
@@ -32,22 +32,21 @@ class Connection {
     }
   }
 
-  async disconnect() {
+  disconnect() {
     this.models = {};
     this.collections = {};
     this.readyState = 0;
   }
 
-  async close() {
+  close() {
     this.readyState = 3;
-    await this.disconnect();
+    this.disconnect();
     this.readyState = 0;
   }
 
-  // === Database Operations ===
-  async dropDatabase() {
+  dropDatabase() {
     try {
-      await fs.rm(this.dbPath, { recursive: true, force: true });
+      fs.rmSync(this.dbPath, { recursive: true, force: true });
       this.collections = {};
       return true;
     } catch (error) {
@@ -55,24 +54,23 @@ class Connection {
     }
   }
 
-  async removeDb() {
-    await this.dropDatabase();
+  removeDb() {
+    this.dropDatabase();
   }
 
-  async destroy() {
-    await this.dropDatabase();
-    await this.close();
+  destroy() {
+    this.dropDatabase();
+    this.close();
   }
 
-  async useDb(name) {
+  useDb(name) {
     const newDbPath = path.join(path.dirname(this.dbPath), name);
     const newConnection = new Connection(newDbPath);
-    await newConnection.connect();
+    newConnection.connect();
     return newConnection;
   }
 
-  // === Collection Management ===
-  async collection(name) {
+  collection(name) {
     if (!this.collections[name]) {
       this.collections[name] = {
         name,
@@ -82,10 +80,10 @@ class Connection {
     return this.collections[name];
   }
 
-  async dropCollection(name) {
+  dropCollection(name) {
     const collectionPath = path.join(this.dbPath, `${name}.json`);
     try {
-      await fs.unlink(collectionPath);
+      fs.unlinkSync(collectionPath);
       delete this.collections[name];
       return true;
     } catch (error) {
@@ -94,9 +92,9 @@ class Connection {
     }
   }
 
-  async listCollections() {
+  listCollections() {
     try {
-      const files = await fs.readdir(this.dbPath);
+      const files = fs.readdirSync(this.dbPath);
       return files
         .filter(file => file.endsWith('.json'))
         .map(file => ({
@@ -141,16 +139,15 @@ class Connection {
     return this;
   }
 
-  // === Session and Transaction Handling ===
-  async startSession() {
+  startSession() {
     throw new Error('Sessions are not supported in file-based storage');
   }
 
-  async transaction(fn) {
+  transaction() {
     throw new Error('Transactions are not supported in file-based storage');
   }
 
-  async withSession(fn) {
+  withSession() {
     throw new Error('Sessions are not supported in file-based storage');
   }
 
@@ -159,7 +156,7 @@ class Connection {
     return this;
   }
 
-  async getClient() {
+  getClient() {
     return this.client;
   }
 
@@ -168,19 +165,15 @@ class Connection {
     return this;
   }
 
-  // === Index Management ===
-  async syncIndexes(options = {}) {
-    // No-op for file-based system
+  syncIndexes() {
     return [];
   }
 
-  // === Promise Interface ===
-  async asPromise() {
+  asPromise() {
     return this.connect();
   }
 
-  // === Watching and Monitoring ===
-  async watch() {
+  watch() {
     throw new Error('Watch is not supported in file-based storage');
   }
 }

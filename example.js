@@ -24,7 +24,7 @@ const logOutput = (label, data) => {
 const main = async () => {
   try {
     // Connect to database
-    const db = await localgoose.connect('./mydb');
+    const db = localgoose.connect('./mydb');
 
     // Define base Person schema for inheritance
     const personSchema = new localgoose.Schema({

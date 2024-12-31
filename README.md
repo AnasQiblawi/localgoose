@@ -36,7 +36,7 @@ npm install localgoose
 const { localgoose } = require('localgoose');
 
 // Connect to a local directory for storage
-const db = await localgoose.connect('./mydb');
+const db = localgoose.connect('./mydb');
 
 // Define schemas for related models
 const userSchema = new localgoose.Schema({
