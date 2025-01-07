@@ -99,6 +99,22 @@ class QueryBuilder {
     };
     return this.query;
   }
+
+  // === Logical Operators ===
+  or(conditions) {
+    this.query.conditions.$or = conditions;
+    return this.query;
+  }
+
+  nor(conditions) {
+    this.query.conditions.$nor = conditions;
+    return this.query;
+  }
+
+  and(conditions) {
+    this.query.conditions.$and = conditions;
+    return this.query;
+  }
 }
 
 module.exports = { QueryBuilder };
