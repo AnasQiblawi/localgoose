@@ -120,6 +120,54 @@ class Aggregate {
         case '$out':
           docs = await this._out(docs, operation);
           break;
+
+        case '$replaceRoot':
+          docs = docs.map(doc => this._evaluateExpression(operation.newRoot, doc));
+          break;
+        
+        case '$set':
+          docs = docs.map(doc => {
+            const updatedDoc = { ...doc };
+            for (const [field, value] of Object.entries(operation)) {
+              updatedDoc[field] = this._evaluateExpression(value, doc);
+            }
+            return updatedDoc;
+          });
+          break;
+        
+        case '$unset':
+          docs = docs.map(doc => {
+            const updatedDoc = { ...doc };
+            for (const field of operation) {
+              delete updatedDoc[field];
+            }
+            return updatedDoc;
+          });
+          break;
+        
+        case '$bucketAuto':
+          docs = this._bucketAuto(docs, operation);
+          break;
+        
+        case '$changeStream':
+          docs = this._changeStream(docs, operation);
+          break;
+        
+        case '$documents':
+          docs = this._documents(docs, operation);
+          break;
+        
+        case '$fill':
+          docs = this._fill(docs, operation);
+          break;
+        
+        case '$sample':
+          docs = this._sample(docs, operation.size);
+          break;
+        
+        case '$setWindowFields':
+          docs = this._setWindowFields(docs, operation);
+          break;
       }
     }
 
@@ -546,6 +594,91 @@ class Aggregate {
     return Object.entries(counts)
       .map(([key, count]) => ({ _id: key, count }))
       .sort((a, b) => b.count - a.count);
+  }
+
+  _bucketAuto(docs, operation) {
+    const { groupBy, buckets, output = {} } = operation;
+    const values = docs.map(doc => this._evaluateExpression(groupBy, doc)).sort((a, b) => a - b);
+    const bucketSize = Math.ceil(values.length / buckets);
+    
+    return Array.from({ length: buckets }, (_, i) => {
+      const start = i * bucketSize;
+      const end = (i + 1) * bucketSize;
+      
+      const bucketDocs = docs.filter((doc, index) => 
+        index >= start && index < Math.min(end, docs.length)
+      );
+      
+      return {
+        _id: { 
+          min: values[start], 
+          max: values[Math.min(end - 1, values.length - 1)] 
+        },
+        count: bucketDocs.length,
+        ...this._computeOutputFields(bucketDocs, output)
+      };
+    });
+  }
+
+  _changeStream(docs, operation) {
+    // Placeholder for change stream logic
+    return docs;
+  }
+
+  _documents(docs, operation) {
+    return Array.isArray(operation) ? operation : [operation];
+  }
+
+  _fill(docs, operation) {
+    const { sortBy, output } = operation;
+    const sortedDocs = sortBy ? this._sort(docs, sortBy) : [...docs];
+    
+    return sortedDocs.map(doc => {
+      const filledDoc = { ...doc };
+      
+      for (const [field, method] of Object.entries(output)) {
+        if (filledDoc[field] === null || filledDoc[field] === undefined) {
+          switch (method) {
+            case 'linear':
+              const docIndex = sortedDocs.indexOf(doc);
+              const prevDoc = sortedDocs[docIndex - 1];
+              const nextDoc = sortedDocs[docIndex + 1];
+              if (prevDoc && nextDoc) {
+                filledDoc[field] = (prevDoc[field] + nextDoc[field]) / 2;
+              }
+              break;
+            case 'locf':
+              const lastValidDoc = sortedDocs.findLast(d => 
+                d[field] !== null && d[field] !== undefined
+              );
+              if (lastValidDoc) {
+                filledDoc[field] = lastValidDoc[field];
+              }
+              break;
+          }
+        }
+      }
+      
+      return filledDoc;
+    });
+  }
+
+  _sample(docs, size) {
+    return docs
+      .sort(() => 0.5 - Math.random())
+      .slice(0, size);
+  }
+
+  _setWindowFields(docs, operation) {
+    const { partitionBy, sortBy, output } = operation;
+    
+    const partitionedDocs = partitionBy 
+      ? this._partitionDocuments(docs, partitionBy) 
+      : [docs];
+    
+    return partitionedDocs.flatMap(partition => 
+      this._computeWindowFields(partition, sortBy, output)
+    );
   }
 
   // === Utility Methods ===
