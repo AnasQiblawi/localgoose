@@ -160,35 +160,59 @@ schema.index({ title: 'text', content: 'text' });
 
 #### Create
 ```javascript
-// Single document
+// Create a single document
 const doc = await Model.create({
   field: 'value'
 });
 
-// Multiple documents
+// Create multiple documents
 const docs = await Model.create([
   { field: 'value1' },
   { field: 'value2' }
 ]);
+
+// Insert many documents
+const docs = await Model.insertMany([
+  { field: 'value1' },
+  { field: 'value2' }
+], {
+  ordered: true, // Optional: documents are inserted in order
+  lean: true     // Optional: returns plain objects instead of documents
+});
 ```
 
 #### Read
 ```javascript
-// Find all
+// Find all documents
 const docs = await Model.find();
 
-// Find with conditions
+// Find with specific conditions
 const docs = await Model.find({
-  field: 'value'
+  field: 'value',
+  number: { $gt: 10 }
 });
 
-// Find one
+// Find one document
 const doc = await Model.findOne({
   field: 'value'
 });
 
 // Find by ID
 const doc = await Model.findById(id);
+
+// Count documents
+const count = await Model.countDocuments({
+  field: 'value'
+});
+
+// Estimated count (faster but not exact)
+const count = await Model.estimatedDocumentCount();
+
+// Check if document exists
+const exists = await Model.exists({ field: 'value' });
+
+// Get distinct values
+const values = await Model.distinct('field', { type: 'specific' });
 
 // Find with population
 const doc = await Model.findOne({ field: 'value' })
@@ -198,33 +222,104 @@ const doc = await Model.findOne({ field: 'value' })
 
 #### Update
 ```javascript
-// Update one
+// Update one document
 const result = await Model.updateOne(
-  { field: 'value' },
-  { $set: { newField: 'newValue' }}
+  { field: 'value' },            // filter
+  { $set: { newField: 'new' }},  // update
+  { upsert: true }               // options
 );
 
-// Update many
+// Update many documents
 const result = await Model.updateMany(
   { field: 'value' },
-  { $set: { newField: 'newValue' }}
+  { $set: { newField: 'new' }}
 );
 
-// Save changes to document
-doc.field = 'new value';
-await doc.save();
+// Find one and update
+const doc = await Model.findOneAndUpdate(
+  { field: 'value' },
+  { $set: { newField: 'new' }},
+  { 
+    new: true,      // return updated document
+    upsert: true    // create if not exists
+  }
+);
+
+// Find by ID and update
+const doc = await Model.findByIdAndUpdate(
+  id,
+  { $set: { field: 'new' }},
+  { new: true }
+);
+
+// Replace one document
+const result = await Model.replaceOne(
+  { field: 'value' },
+  { newDocument: true }
+);
+
+// Increment a field
+const result = await Model.increment(
+  { field: 'value' },  // filter
+  'counter',           // field to increment
+  5                    // increment amount (default: 1)
+);
 ```
 
 #### Delete
 ```javascript
-// Delete one
+// Delete one document
 const result = await Model.deleteOne({
   field: 'value'
 });
 
-// Delete many
+// Delete many documents
 const result = await Model.deleteMany({
   field: 'value'
+});
+
+// Find one and delete
+const doc = await Model.findOneAndDelete({
+  field: 'value'
+});
+
+// Find by ID and delete
+const doc = await Model.findByIdAndDelete(id);
+
+// Find by ID and remove (alias for findByIdAndDelete)
+const doc = await Model.findByIdAndRemove(id);
+```
+
+#### Bulk Operations
+```javascript
+// Bulk write operations
+const result = await Model.bulkWrite([
+  {
+    insertOne: {
+      document: { field: 'value' }
+    }
+  },
+  {
+    updateOne: {
+      filter: { field: 'value' },
+      update: { $set: { field: 'new' }}
+    }
+  },
+  {
+    deleteOne: {
+      filter: { field: 'value' }
+    }
+  }
+], {
+  ordered: true // Optional: operations are executed in order
+});
+
+// Bulk save documents
+const result = await Model.bulkSave([
+  new Model({ field: 'value1' }),
+  new Model({ field: 'value2' })
+], {
+  ordered: true
 });
 ```
 
