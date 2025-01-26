@@ -22,6 +22,8 @@ class Schema {
     this.discriminatorMapping = null;
     this.obj = { ...definition };
     this._searchIndexes = new Map();
+    this._doc = {};
+    this._queue = new Map();
 
     this.reserved = Schema.reserved;
 
@@ -93,7 +95,14 @@ class Schema {
   _createSchemaType(path, options) {
     const type = options.type || options;
     const schemaTypeOptions = typeof options === 'object' ? options : {};
-    return new SchemaType(path, schemaTypeOptions, type);
+    const schemaType = new SchemaType(path, schemaTypeOptions, type);
+
+    // Handle default values
+    if (options.default !== undefined) {
+      schemaType.default(options.default);
+    }
+
+    return schemaType;
   }
 
   // === Static Properties ===
@@ -453,6 +462,46 @@ class Schema {
       }
     }
     return obj;
+  }
+
+  // Method to handle nested paths
+  nested(path) {
+    const parts = path.split('.');
+    let nested = false;
+    let current = this.definition;
+
+    for (let i = 0; i < parts.length; i++) {
+      if (current[parts[i]] && typeof current[parts[i]] === 'object') {
+        nested = true;
+        current = current[parts[i]];
+      } else {
+        break;
+      }
+    }
+    return nested;
+  }
+
+  // Method to handle array paths
+  isArray(path) {
+    const schemaType = this._paths.get(path);
+    return schemaType && (
+      Array.isArray(schemaType.instance) || 
+      schemaType.instance === Array
+    );
+  }
+
+  // Method for schema inheritance
+  extend(schema) {
+    if (!(schema instanceof Schema)) {
+      throw new Error('extend() argument must be a Schema');
+    }
+
+    this.add(schema.definition);
+    this.methods = { ...this.methods, ...schema.methods };
+    this.statics = { ...this.statics, ...schema.statics };
+    this.virtuals = { ...this.virtuals, ...schema.virtuals };
+
+    return this;
   }
 }
 
