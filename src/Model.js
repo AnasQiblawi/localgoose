@@ -837,6 +837,58 @@ class Model {
   where(path) {
     return new Query(this).where(path);
   }
+
+  // Add deprecated methods with warnings
+  static count(conditions, callback) {
+    console.warn('Model.count() is deprecated. Use Model.countDocuments() or Model.estimatedDocumentCount() instead.');
+    return this.countDocuments(conditions, callback);
+  }
+
+  static remove(conditions, options, callback) {
+    console.warn('Model.remove() is deprecated. Use Model.deleteOne() or Model.deleteMany() instead.');
+    return this.deleteMany(conditions, options, callback);
+  }
+
+  static update(conditions, doc, options, callback) {
+    console.warn('Model.update() is deprecated. Use Model.updateOne() or Model.updateMany() instead.');
+    if (options && options.multi) {
+      return this.updateMany(conditions, doc, options, callback);
+    }
+    return this.updateOne(conditions, doc, options, callback);
+  }
+
+  static async populate(docs, options) {
+    if (!docs) return docs;
+    const isArray = Array.isArray(docs);
+    const documents = isArray ? docs : [docs];
+    const path = typeof options === 'string' ? options : options.path;
+    const select = options.select || '';
+    const model = options.model || this.db.model(this.schema.path(path).options.ref);
+
+    for (const doc of documents) {
+      if (doc[path]) {
+        const populated = await model.findById(doc[path]).select(select);
+        doc[path] = populated;
+      }
+    }
+
+    return isArray ? documents : documents[0];
+  }
+
+  static mapReduce(options, callback) {
+    throw new Error('mapReduce is not supported in this implementation');
+  }
+
+  // Add missing prototype properties
+  get $where() {
+    return function(condition) {
+      return this.where({ $where: condition });
+    };
+  }
+
+  $remove(options, callback) {
+    return this.remove(options, callback);
+  }
 }
 
 module.exports = { Model };
