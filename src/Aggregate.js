@@ -354,6 +354,112 @@ class Aggregate {
     return this;
   }
 
+  allowDiskUse(value) {
+    this.options.allowDiskUse = value;
+    return this;
+  }
+
+  append(...ops) {
+    if (Array.isArray(ops[0])) {
+      this.pipeline.push(...ops[0]);
+    } else {
+      this.pipeline.push(...ops);
+    }
+    return this;
+  }
+
+  collation(options) {
+    this.options.collation = options;
+    return this;
+  }
+
+  cursor(options = {}) {
+    this.options.cursor = options;
+    return this;
+  }
+
+  explain(verbosity) {
+    this._explain = verbosity || true;
+    return this;
+  }
+
+  hint(value) {
+    this.options.hint = value;
+    return this;
+  }
+
+  near(arg) {
+    if (!arg || typeof arg !== 'object') {
+      throw new Error('$geoNear requires valid arguments');
+    }
+    this.pipeline.unshift({ $geoNear: arg });
+    return this;
+  }
+
+  option(opts = {}) {
+    Object.assign(this.options, opts);
+    return this;
+  }
+
+  pipeline() {
+    return [...this.pipeline];
+  }
+
+  read(pref) {
+    this.options.readPreference = pref;
+    return this;
+  }
+
+  readConcern(level) {
+    this.options.readConcern = { level };
+    return this;
+  }
+
+  redact(expression, thenExpr, elseExpr) {
+    if (thenExpr && elseExpr) {
+      expression = {
+        $cond: {
+          if: expression,
+          then: thenExpr.startsWith('$$') ? thenExpr : `$$${thenExpr}`,
+          else: elseExpr.startsWith('$$') ? elseExpr : `$$${elseExpr}`
+        }
+      };
+    }
+    this.pipeline.push({ $redact: expression });
+    return this;
+  }
+
+  search($search) {
+    this.pipeline.push({ $search });
+    return this;
+  }
+
+  then(resolve, reject) {
+    return this.exec().then(resolve, reject);
+  }
+
+  catch(reject) {
+    return this.exec().catch(reject);
+  }
+
+  finally(onFinally) {
+    return this.exec().finally(onFinally);
+  }
+
+  [Symbol.asyncIterator]() {
+    return {
+      pipeline: this.pipeline,
+      model: this.model,
+      next: async function() {
+        if (!this._cursor) {
+          const results = await this.model._aggregate(this.pipeline);
+          this._cursor = results[Symbol.iterator]();
+        }
+        return this._cursor.next();
+      }
+    };
+  }
+
   // === Pipeline Stage Execution Helpers ===
   _group(docs, grouping) {
     const groups = new Map();
