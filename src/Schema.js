@@ -346,6 +346,61 @@ class Schema {
     return this;
   }
 
+  removeIndex(index) {
+    if (typeof index === 'string') {
+      this._indexes = this._indexes.filter(idx => idx.options.name !== index);
+    } else {
+      this._indexes = this._indexes.filter(idx => {
+        return JSON.stringify(idx.fields) !== JSON.stringify(index);
+      });
+    }
+    return this;
+  }
+
+  removeVirtual(paths) {
+    paths = Array.isArray(paths) ? paths : [paths];
+    paths.forEach(path => {
+      delete this.virtuals[path];
+    });
+    return this;
+  }
+
+  toJSONSchema(options = {}) {
+    const useBsonType = options.useBsonType || false;
+    const typeKey = useBsonType ? 'bsonType' : 'type';
+    const jsonSchema = {
+      type: 'object',
+      required: ['_id', ...this.requiredPaths()],
+      properties: {}
+    };
+
+    this.eachPath((path, schemaType) => {
+      let property = {};
+      
+      if (useBsonType) {
+        if (schemaType.instance === 'ObjectID') {
+          property[typeKey] = 'objectId';
+        } else {
+          property[typeKey] = [schemaType.instance.toLowerCase(), 'null'];
+        }
+      } else {
+        if (schemaType.instance === 'ObjectID') {
+          property[typeKey] = 'string';
+        } else {
+          property[typeKey] = [schemaType.instance.toLowerCase(), 'null'];
+        }
+      }
+
+      if (schemaType.enumValues && schemaType.enumValues.length) {
+        property.enum = schemaType.enumValues;
+      }
+
+      jsonSchema.properties[path] = property;
+    });
+
+    return jsonSchema;
+  }
+
   // === Schema Options ===
   get(key) {
     return this.options[key];
