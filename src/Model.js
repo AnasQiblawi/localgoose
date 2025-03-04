@@ -889,6 +889,18 @@ class Model {
   $remove(options, callback) {
     return this.remove(options, callback);
   }
+
+  async insertOne(doc, options = {}) {
+    if (doc instanceof Document) {
+      return doc.save(options);
+    }
+    const document = new this(doc);
+    return document.save(options);
+  }
+
+  namespace() {
+    return `${this.db.name}.${this.collection.name}`;
+  }
 }
 
 module.exports = { Model };
