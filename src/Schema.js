@@ -5,6 +5,14 @@ const { ObjectId, Decimal128 } = require('bson'); // Added Decimal128
 class Schema {
   // === Core Functionality ===
   constructor(definition, options = {}) {
+    if (definition !== undefined && definition !== null && typeof definition !== 'object') {
+      throw new TypeError('Schema definition must be an object or null');
+    }
+    
+    if (Array.isArray(definition)) {
+      throw new TypeError('Schema definition cannot be an array');
+    }
+
     this.definition = this._parseDefinition(definition);
     this.options = options;
     this.virtuals = {};
@@ -94,6 +102,15 @@ class Schema {
 
   _createSchemaType(path, options) {
     const type = options.type || options;
+    
+    if (type === undefined) {
+      throw new Error(`No type specified for path '${path}'`);
+    }
+
+    if (!Schema.Types[type.name] && !(type instanceof Schema)) {
+      throw new Error(`Invalid type ${type} specified for path '${path}'`);
+    }
+
     const schemaTypeOptions = typeof options === 'object' ? options : {};
     const schemaType = new SchemaType(path, schemaTypeOptions, type);
 
@@ -186,6 +203,16 @@ class Schema {
   }
 
   index(fields, options = {}) {
+    if (typeof fields !== 'object' || Array.isArray(fields)) {
+      throw new TypeError('Index fields must be an object');
+    }
+
+    for (const [path, value] of Object.entries(fields)) {
+      if (![-1, 1, '2d', '2dsphere', 'geoHaystack', 'hashed', 'text'].includes(value)) {
+        throw new Error(`Invalid index value '${value}' for path '${path}'`);
+      }
+    }
+
     const index = { fields, options };
     this._indexes.push(index);
     return this;
@@ -336,23 +363,39 @@ class Schema {
   }
 
   searchIndex(options = {}) {
+    if (typeof options !== 'object' || Array.isArray(options)) {
+      throw new TypeError('Search index options must be an object');
+    }
+
+    if (!options.name) {
+      throw new Error('Search index must have a name');
+    }
+
+    if (!options.definition) {
+      throw new Error('Search index must have a definition');
+    }
+
     const index = {
       weights: options.weights || {},
       name: options.name,
+      definition: options.definition,
       default_language: options.default_language || 'english',
       language_override: options.language_override || 'language'
     };
-    this._searchIndexes.set(options.name || 'default', index);
+
+    this._searchIndexes.set(options.name, index);
     return this;
   }
 
   removeIndex(index) {
     if (typeof index === 'string') {
       this._indexes = this._indexes.filter(idx => idx.options.name !== index);
-    } else {
+    } else if (typeof index === 'object' && !Array.isArray(index)) {
       this._indexes = this._indexes.filter(idx => {
         return JSON.stringify(idx.fields) !== JSON.stringify(index);
       });
+    } else {
+      throw new TypeError('Index parameter must be a string name or an object specification');
     }
     return this;
   }
