@@ -196,6 +196,9 @@ class Document {
     if (!this._populated.has(path)) {
       throw new Error(`Path '${path}' is not populated`);
     }
+    if (values) {
+      this.$set(values);
+    }
     return this;
   }
 
@@ -312,9 +315,11 @@ class Document {
   // === State Checks and Utilities ===
   $isEmpty(path) {
     const val = this.get(path);
-    return val == null || val === '' || 
-           (Array.isArray(val) && val.length === 0) ||
-           (typeof val === 'object' && Object.keys(val).length === 0);
+    if (val === null || val === undefined) return true;
+    if (Array.isArray(val)) return val.length === 0;
+    if (typeof val === 'object') return Object.keys(val).length === 0;
+    if (typeof val === 'string') return val.trim().length === 0;
+    return false;
   }
 
   $isDefault(path) {
@@ -404,22 +409,42 @@ class Document {
   // === Serialization Methods ===
   toObject(options = {}) {
     const obj = { ...this._doc };
+    
+    if (options.getters || options.virtuals) {
+      // Apply virtuals and getters
+      Object.entries(this._schema.virtuals).forEach(([path, virtual]) => {
+        if (options.aliases === false && virtual.isAlias) {
+          return;
+        }
+        obj[path] = virtual.applyGetters(undefined, this);
+      });
+    }
+
     if (options.minimize) {
+      // Remove empty objects
       for (const key in obj) {
-        if (obj[key] === undefined) {
+        if (this.$isEmpty(key)) {
           delete obj[key];
         }
       }
     }
-    if (options.virtuals) {
-      for (const [path, virtual] of Object.entries(this._schema.virtuals)) {
-        obj[path] = virtual.applyGetters(undefined, this);
-      }
+
+    if (options.versionKey === false && this._schema.options.versionKey) {
+      delete obj[this._schema.options.versionKey];
     }
+
+    if (options.transform) {
+      return options.transform(this, obj, options);
+    }
+
     return obj;
   }
 
   toJSON(options = {}) {
+    options = {
+      flattenMaps: true,  // Default true for JSON
+      ...options
+    };
     return this.toObject(options);
   }
 
@@ -477,15 +502,6 @@ class Document {
   $isSelected(path) {
     if (!this._selected) return true;
     return this._selected.has(path);
-  }
-
-  $isEmpty(path) {
-    const val = this.get(path);
-    if (val === null || val === undefined) return true;
-    if (Array.isArray(val)) return val.length === 0;
-    if (typeof val === 'object') return Object.keys(val).length === 0;
-    if (typeof val === 'string') return val.trim().length === 0;
-    return false;
   }
 }
 
