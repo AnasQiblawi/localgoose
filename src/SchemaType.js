@@ -499,6 +499,60 @@ class SchemaType {
   get isRequired() {
     return this.validators.some(v => v.isRequired);
   }
+
+  toJSONSchema(options = {}) {
+    const jsonSchema = {};
+    
+    // Handle basic type mapping
+    switch (this.instance) {
+      case String:
+        jsonSchema.type = options.useBsonType ? 'string' : 'string';
+        break;
+      case Number:
+        jsonSchema.type = options.useBsonType ? 'number' : 'number';
+        break;
+      case Date:
+        jsonSchema.type = options.useBsonType ? 'date' : 'string';
+        jsonSchema.format = 'date-time';
+        break;
+      case Boolean:
+        jsonSchema.type = options.useBsonType ? 'bool' : 'boolean';
+        break;
+      default:
+        jsonSchema.type = 'object';
+    }
+
+    // Handle array types
+    if (this._isArray) {
+      jsonSchema.type = 'array';
+      if (this._arrayType && typeof this._arrayType.toJSONSchema === 'function') {
+        jsonSchema.items = this._arrayType.toJSONSchema(options);
+      }
+    }
+
+    // Add validation constraints
+    if (this._enum) {
+      jsonSchema.enum = this._enum;
+    }
+
+    if (this._min != null) {
+      jsonSchema.minimum = this._min;
+    }
+
+    if (this._max != null) {
+      jsonSchema.maximum = this._max;
+    }
+
+    if (this._match) {
+      jsonSchema.pattern = this._match.source;
+    }
+
+    if (this.isRequired) {
+      jsonSchema.required = true;
+    }
+
+    return jsonSchema;
+  }
 }
 
 module.exports = { SchemaType };
