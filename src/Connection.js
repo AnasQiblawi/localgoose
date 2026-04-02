@@ -1,23 +1,24 @@
 const fs = require('fs-extra');
 const path = require('path');
+const { clearCache } = require('./utils.js');
 const { Model } = require('./Model.js');
+const { Document } = require('./Document.js');
 const { EventEmitter } = require('events');
 
 class Connection {
-  // === Core Functionality ===
   constructor(dbPath = './db') {
-    this.dbPath = dbPath;
-    this.models = {};
+    this.dbPath      = dbPath;
+    this.models      = {};
     this.collections = {};
-    this.config = new Map();
-    this.plugins = new Set();
-    this.events = new EventEmitter();
-    this.readyState = 0; // 0: disconnected, 1: connected, 2: connecting, 3: disconnecting
-    this.name = path.basename(dbPath);
-    this.host = 'localhost';
-    this.port = null;
-    this.user = null;
-    this.pass = null;
+    this.config      = new Map();
+    this.plugins     = new Set();
+    this.events      = new EventEmitter();
+    this.readyState  = 0; // 0: disconnected, 1: connected, 2: connecting, 3: disconnecting
+    this.name        = path.basename(dbPath);
+    this.host        = 'localhost';
+    this.port        = null;
+    this.user        = null;
+    this.pass        = null;
   }
 
   connect() {
@@ -33,49 +34,41 @@ class Connection {
   }
 
   disconnect() {
-    this.models = {};
+    this.readyState = 3;
+    this.models      = {};
     this.collections = {};
-    this.readyState = 0;
+    this.readyState  = 0;
+    return Promise.resolve();
   }
 
   close() {
-    this.readyState = 3;
-    this.disconnect();
-    this.readyState = 0;
+    return this.disconnect();
   }
 
   dropDatabase() {
     try {
+      clearCache(this.dbPath);
       fs.rmSync(this.dbPath, { recursive: true, force: true });
       this.collections = {};
-      return true;
+      return Promise.resolve(true);
     } catch (error) {
-      return false;
+      return Promise.resolve(false);
     }
   }
 
-  removeDb() {
-    this.dropDatabase();
-  }
-
-  destroy() {
-    this.dropDatabase();
-    this.close();
-  }
+  removeDb()  { return this.dropDatabase(); }
+  destroy()   { return this.dropDatabase().then(() => this.close()); }
 
   useDb(name) {
     const newDbPath = path.join(path.dirname(this.dbPath), name);
-    const newConnection = new Connection(newDbPath);
-    newConnection.connect();
-    return newConnection;
+    const conn = new Connection(newDbPath);
+    conn.connect();
+    return conn;
   }
 
   collection(name) {
     if (!this.collections[name]) {
-      this.collections[name] = {
-        name,
-        collectionPath: path.join(this.dbPath, `${name}.json`)
-      };
+      this.collections[name] = { name, collectionPath: path.join(this.dbPath, `${name}.json`) };
     }
     return this.collections[name];
   }
@@ -85,10 +78,10 @@ class Connection {
     try {
       fs.unlinkSync(collectionPath);
       delete this.collections[name];
-      return true;
+      return Promise.resolve(true);
     } catch (error) {
-      if (error.code === 'ENOENT') return false;
-      throw error;
+      if (error.code === 'ENOENT') return Promise.resolve(false);
+      return Promise.reject(error);
     }
   }
 
@@ -96,41 +89,50 @@ class Connection {
     try {
       const files = fs.readdirSync(this.dbPath);
       return files
-        .filter(file => file.endsWith('.json'))
-        .map(file => ({
-          name: path.basename(file, '.json'),
-          type: 'collection'
-        }));
-    } catch (error) {
-      return [];
-    }
+        .filter(f => f.endsWith('.json'))
+        .map(f => ({ name: path.basename(f, '.json'), type: 'collection' }));
+    } catch { return []; }
   }
 
   // === Model Management ===
   model(name, schema) {
     if (schema) {
-      this.models[name] = new Model(name, schema, this);
+      const modelInstance = new Model(name, schema, this);
+      
+      class ModelConstructor extends Document {
+        constructor(obj) {
+          super(obj, schema, modelInstance);
+          this.isNew = true;
+          this._isNew = true;
+        }
+      }
+      
+      this.models[name] = new Proxy(ModelConstructor, {
+        get(target, prop) {
+          if (prop in target) return Reflect.get(target, prop);
+          const val = modelInstance[prop];
+          if (typeof val === 'function') return val.bind(modelInstance);
+          return val;
+        },
+        set(target, prop, value) {
+          if (prop in target) return Reflect.set(target, prop, value);
+          modelInstance[prop] = value;
+          return true;
+        }
+      });
+    }
+    if (!this.models[name]) {
+      throw new Error(`Model "${name}" has not been registered.`);
     }
     return this.models[name];
   }
 
-  deleteModel(name) {
-    delete this.models[name];
-  }
+  deleteModel(name) { delete this.models[name]; }
+  modelNames()      { return Object.keys(this.models); }
 
-  modelNames() {
-    return Object.keys(this.models);
-  }
-
-  // === Configuration Methods ===
-  get(key) {
-    return this.config.get(key);
-  }
-
-  set(key, value) {
-    this.config.set(key, value);
-    return this;
-  }
+  // === Configuration ===
+  get(key)        { return this.config.get(key); }
+  set(key, value) { this.config.set(key, value); return this; }
 
   plugin(fn, opts) {
     if (this.plugins.has(fn)) return this;
@@ -139,43 +141,24 @@ class Connection {
     return this;
   }
 
-  startSession() {
-    throw new Error('Sessions are not supported in file-based storage');
+  startSession()  { 
+    return Promise.resolve({
+      startTransaction() {},
+      commitTransaction() { return Promise.resolve(); },
+      abortTransaction() { return Promise.resolve(); },
+      endSession() { return Promise.resolve(); }
+    });
   }
+  transaction()   { return Promise.resolve(); }
+  withSession(fn) { return Promise.resolve(fn(this.startSession())); }
 
-  transaction() {
-    throw new Error('Transactions are not supported in file-based storage');
-  }
+  get client()    { return this; }
+  getClient()     { return this; }
+  setClient()     { return this; }
 
-  withSession() {
-    throw new Error('Sessions are not supported in file-based storage');
-  }
-
-  // === Client Management ===
-  get client() {
-    return this;
-  }
-
-  getClient() {
-    return this.client;
-  }
-
-  setClient(client) {
-    // No-op for file-based system
-    return this;
-  }
-
-  syncIndexes() {
-    return [];
-  }
-
-  asPromise() {
-    return this.connect();
-  }
-
-  watch() {
-    throw new Error('Watch is not supported in file-based storage');
-  }
+  syncIndexes()   { return Promise.resolve([]); }
+  asPromise()     { return Promise.resolve(this.connect()); }
+  watch()         { throw new Error('Watch is not supported in file-based storage'); }
 }
 
 module.exports = { Connection };

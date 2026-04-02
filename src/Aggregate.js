@@ -1,1271 +1,795 @@
-const { readJSON } = require('./utils.js');
+const { readJSON, writeJSON, getNestedValue } = require('./utils.js');
 const path = require('path');
 
+// All stages supported by exec()
+const VALID_STAGES = [
+  '$match', '$group', '$sort', '$limit', '$skip', '$unwind',
+  '$project', '$lookup', '$addFields', '$densify',
+  '$facet', '$graphLookup', '$unionWith', '$sortByCount',
+  '$count', '$out', '$merge', '$replaceRoot', '$set', '$unset',
+  '$bucket', '$bucketAuto', '$sample', '$fill', '$setWindowFields',
+  '$changeStream', '$documents', '$redact', '$search', '$geoNear'
+];
+
 class Aggregate {
-  // === Core Functionality ===
   constructor(model, pipeline = []) {
-    if (!model) {
-      throw new Error('Model is required for aggregation');
-    }
+    if (!model) throw new Error('Model is required for aggregation');
     this.model = model;
-    this.pipeline = [...pipeline];
-    this._explain = false;
+    this._pipeline = Array.isArray(pipeline) ? [...pipeline] : [];
+    this._explain  = false;
+    this._options  = {};
+    this._preHooks = [];
     this._validatePipeline();
   }
 
   _validatePipeline() {
-    const validStages = ['$match', '$group', '$sort', '$limit', '$skip', '$unwind', 
-      '$project', '$lookup', '$addFields', '$densify', 
-      '$facet', '$graphLookup', '$unionWith', '$sortByCount'];
-
-    
-    this.pipeline.forEach(stage => {
-      const operator = Object.keys(stage)[0];
-      if (!validStages.includes(operator)) {
-        throw new Error(`Invalid pipeline stage: ${operator}`);
-      }
-    });
+    for (const stage of this._pipeline) {
+      const op = Object.keys(stage)[0];
+      if (!VALID_STAGES.includes(op)) throw new Error(`Invalid pipeline stage: ${op}`);
+    }
   }
 
+  // Returns a copy of the pipeline array (Mongoose API)
+  pipeline() { return [...this._pipeline]; }
+
   async exec() {
-    if (!this.model._find) {
-      throw new Error('_find method is not implemented in the model');
-    }
+    // Run pre-aggregate hooks
+    for (const fn of (this._preHooks || [])) await fn.call(this);
+    // Also run schema-registered hooks
+    const schemaHooks = this.model.schema.middleware.pre.aggregate || [];
+    for (const fn of schemaHooks) await fn.call(this);
+
+    if (!this.model._find) throw new Error('_find method is not implemented in the model');
     let docs = await this.model._find();
-    
-    for (const stage of this.pipeline) {
-      const operator = Object.keys(stage)[0];
-      const operation = stage[operator];
-      
-      switch (operator) {
+
+    for (const stage of this._pipeline) {
+      const op        = Object.keys(stage)[0];
+      const operation = stage[op];
+      switch (op) {
         case '$match':
           docs = docs.filter(doc => this.model._matchQuery(doc, operation));
           break;
-          
         case '$group':
           docs = this._group(docs, operation);
           break;
-          
         case '$sort':
-          docs = this._sort(docs, operation);
+          docs = this._sortDocs(docs, operation);
           break;
-          
         case '$limit':
           docs = docs.slice(0, operation);
           break;
-          
         case '$skip':
           docs = docs.slice(operation);
           break;
-          
         case '$unwind':
           docs = this._unwind(docs, operation);
           break;
-        
         case '$project':
-          docs = docs.map(doc => {
-            const projectedDoc = {};
-            for (const [field, spec] of Object.entries(operation)) {
-              if (typeof spec === 'number') {
-                if (spec === 1) {
-                  projectedDoc[field] = this._getFieldValue(doc, field);
-                }
-              } else if (typeof spec === 'object') {
-                projectedDoc[field] = this._evaluateExpression(spec, doc);
-              }
-            }
-            return projectedDoc;
-          });
+          docs = docs.map(doc => this._project(doc, operation));
           break;
-        
         case '$lookup':
           docs = await this._lookup(docs, operation);
           break;
-
-        case '$addFields':
-          docs = docs.map(doc => {
-            const newDoc = { ...doc };
-            for (const [field, value] of Object.entries(operation)) {
-              newDoc[field] = this._evaluateExpression(value, doc);
-            }
-            return newDoc;
-          });
+        case '$addFields': case '$set':
+          docs = docs.map(doc => { const nd = { ...doc }; for (const [f, v] of Object.entries(operation)) nd[f] = this._evalExpr(v, doc); return nd; });
           break;
-
+        case '$unset':
+          docs = docs.map(doc => { const nd = { ...doc }; for (const f of (Array.isArray(operation) ? operation : [operation])) delete nd[f]; return nd; });
+          break;
+        case '$replaceRoot':
+          docs = docs.map(doc => this._evalExpr(operation.newRoot, doc));
+          break;
         case '$densify':
-          // Handle densify (requires additional logic to generate gaps and fill them)
           docs = this._densify(docs, operation);
           break;
-
         case '$facet':
-          docs = [this._facet(docs, operation)];
+          docs = [await this._facet(docs, operation)];
           break;
-
         case '$graphLookup':
           docs = this._graphLookup(docs, operation);
           break;
-
         case '$unionWith':
-          docs = this._unionWith(docs, operation);
+          docs = await this._unionWith(docs, operation);
           break;
-
         case '$sortByCount':
           docs = this._sortByCount(docs, operation);
           break;
-
-        case '$merge':
-          docs = await this._merge(docs, operation);
+        case '$count':
+          docs = [{ [operation]: docs.length }];
           break;
-
-        case '$out':
-          docs = await this._out(docs, operation);
+        case '$bucket':
+          docs = this._bucket(docs, operation);
           break;
-
-        case '$replaceRoot':
-          docs = docs.map(doc => this._evaluateExpression(operation.newRoot, doc));
-          break;
-        
-        case '$set':
-          docs = docs.map(doc => {
-            const updatedDoc = { ...doc };
-            for (const [field, value] of Object.entries(operation)) {
-              updatedDoc[field] = this._evaluateExpression(value, doc);
-            }
-            return updatedDoc;
-          });
-          break;
-        
-        case '$unset':
-          docs = docs.map(doc => {
-            const updatedDoc = { ...doc };
-            for (const field of operation) {
-              delete updatedDoc[field];
-            }
-            return updatedDoc;
-          });
-          break;
-        
         case '$bucketAuto':
           docs = this._bucketAuto(docs, operation);
           break;
-        
-        case '$changeStream':
-          docs = this._changeStream(docs, operation);
-          break;
-        
-        case '$documents':
-          docs = this._documents(docs, operation);
-          break;
-        
-        case '$fill':
-          docs = this._fill(docs, operation);
-          break;
-        
         case '$sample':
           docs = this._sample(docs, operation.size);
           break;
-        
+        case '$fill':
+          docs = this._fill(docs, operation);
+          break;
         case '$setWindowFields':
           docs = this._setWindowFields(docs, operation);
+          break;
+        case '$out':
+          docs = await this._out(docs, operation);
+          break;
+        case '$merge':
+          docs = await this._merge(docs, operation);
+          break;
+        case '$geoNear':
+          // Not applicable for file storage; pass through
+          break;
+        default:
+          // Unknown stages pass through
           break;
       }
     }
 
+    // Run post-aggregate hooks
+    const postHooks = this.model.schema.middleware.post.aggregate || [];
+    for (const fn of postHooks) await fn.call(this, docs);
+
     return docs;
   }
 
-  async _lookup(docs, operation) {
-    const { from, localField, foreignField, as } = operation;
-    const foreignDocs = await this.model._getCollection(from);
-    return docs.map(doc => {
-      const localValue = this._getFieldValue(doc, localField);
-      const matches = foreignDocs.filter(foreignDoc => 
-        String(this._getFieldValue(foreignDoc, foreignField)) === String(localValue)
-      );
-      return { ...doc, [as]: matches };
-    });
-  }
-
-  async _merge(docs, operation) {
-    const { into, on, whenMatched, whenNotMatched } = operation;
-    const targetCollectionPath = path.join(this.model.connection.dbPath, `${into}.json`);
-    const targetDocs = await readJSON(targetCollectionPath);
-
-    const mergedDocs = docs.map(doc => {
-      const matchIndex = targetDocs.findIndex(targetDoc => targetDoc[on] === doc[on]);
-      if (matchIndex !== -1) {
-        switch (whenMatched) {
-          case 'replace':
-            targetDocs[matchIndex] = doc;
-            break;
-          case 'merge':
-            targetDocs[matchIndex] = { ...targetDocs[matchIndex], ...doc };
-            break;
-          case 'keepExisting':
-          default:
-            break;
-        }
-      } else {
-        if (whenNotMatched === 'insert') {
-          targetDocs.push(doc);
-        }
-      }
-      return doc;
-    });
-
-    await writeJSON(targetCollectionPath, targetDocs);
-    return mergedDocs;
-  }
-
-  async _out(docs, collection) {
-    const targetCollectionPath = path.join(this.model.connection.dbPath, `${collection}.json`);
-    await writeJSON(targetCollectionPath, docs);
-    return docs;
-  }
-
-  // === Pipeline Stage Methods ===
-  match(criteria) {
-    this.pipeline.push({ $match: criteria });
+  // ─── Pipeline stage builders ───────────────────────────────────────────────
+  match(criteria)         { this._pipeline.push({ $match: criteria });             return this; }
+  group(grouping)         { this._pipeline.push({ $group: grouping });             return this; }
+  sort(sorting)           { this._pipeline.push({ $sort: sorting });               return this; }
+  limit(n)                { this._pipeline.push({ $limit: n });                    return this; }
+  skip(n)                 { this._pipeline.push({ $skip: n });                     return this; }
+  unwind(p)               { this._pipeline.push({ $unwind: p });                   return this; }
+  project(projection)     { this._pipeline.push({ $project: projection });         return this; }
+  lookup(opts)            { this._pipeline.push({ $lookup: opts });                return this; }
+  addFields(fields)       { this._pipeline.push({ $addFields: fields });           return this; }
+  densify(opts)           { this._pipeline.push({ $densify: opts });               return this; }
+  facet(facets)           { this._pipeline.push({ $facet: facets });               return this; }
+  graphLookup(opts)       { this._pipeline.push({ $graphLookup: opts });           return this; }
+  unionWith(coll, pl = []){ this._pipeline.push({ $unionWith: { coll, pipeline: pl } }); return this; }
+  sortByCount(field)      { this._pipeline.push({ $sortByCount: field });          return this; }
+  count(fieldName = 'count') { this._pipeline.push({ $count: fieldName });         return this; }
+  out(collection)         { this._pipeline.push({ $out: collection });             return this; }
+  merge(opts)             { this._pipeline.push({ $merge: opts });                 return this; }
+  replaceRoot(newRoot)    { this._pipeline.push({ $replaceRoot: { newRoot } });    return this; }
+  set(fields)             { this._pipeline.push({ $set: fields });                 return this; }
+  unset(fields)           { this._pipeline.push({ $unset: Array.isArray(fields) ? fields : [fields] }); return this; }
+  bucket(opts)            { this._pipeline.push({ $bucket: opts });                return this; }
+  bucketAuto(opts)        { this._pipeline.push({ $bucketAuto: opts });            return this; }
+  sample(size)            { this._pipeline.push({ $sample: { size } });            return this; }
+  fill(opts)              { this._pipeline.push({ $fill: opts });                  return this; }
+  setWindowFields(opts)   { this._pipeline.push({ $setWindowFields: opts });       return this; }
+  redact(expr, thenExpr, elseExpr) {
+    let expression = expr;
+    if (thenExpr && elseExpr) {
+      expression = { $cond: { if: expr, then: thenExpr.startsWith('$$') ? thenExpr : `$$${thenExpr}`, else: elseExpr.startsWith('$$') ? elseExpr : `$$${elseExpr}` } };
+    }
+    this._pipeline.push({ $redact: expression });
     return this;
   }
-
-  group(grouping) {
-    this.pipeline.push({ $group: grouping });
-    return this;
-  }
-
-  sort(sorting) {
-    this.pipeline.push({ $sort: sorting });
-    return this;
-  }
-
-  limit(n) {
-    this.pipeline.push({ $limit: n });
-    return this;
-  }
-
-  skip(n) {
-    this.pipeline.push({ $skip: n });
-    return this;
-  }
-
-  unwind(path) {
-    this.pipeline.push({ $unwind: path });
-    return this;
-  }
-
-  project(projection) {
-    this.pipeline.push({ $project: projection });
-    return this;
-  }
-
-  lookup(lookupOptions) {
-    this.pipeline.push({ $lookup: lookupOptions });
-    return this;
-  }
-
-  addFields(fields) {
-    this.pipeline.push({ $addFields: fields });
-    return this;
-  }
-
-  densify(densifyOptions) {
-    this.pipeline.push({ $densify: densifyOptions });
-    return this;
-  }
-
-  facet(facets) {
-    this.pipeline.push({ $facet: facets });
-    return this;
-  }
-
-  graphLookup(options) {
-    this.pipeline.push({ $graphLookup: options });
-    return this;
-  }
-
-  unionWith(collection, pipeline = []) {
-    this.pipeline.push({ $unionWith: { coll: collection, pipeline } });
-    return this;
-  }
-
-  sortByCount(field) {
-    this.pipeline.push({ $sortByCount: field });
-    return this;
-  }
-
-  count(fieldName = 'count') {
-    this.pipeline.push({ $count: fieldName });
-    return this;
-  }
-  
-  out(collection) {
-    this.pipeline.push({ $out: collection });
-    return this;
-  }
-  
-  merge(options) {
-    this.pipeline.push({ $merge: options });
-    return this;
-  }
-  
-  replaceRoot(newRoot) {
-    this.pipeline.push({ $replaceRoot: { newRoot } });
-    return this;
-  }
-  
-  set(fields) {
-    this.pipeline.push({ $set: fields });
-    return this;
-  }
-  
-  unset(fields) {
-    this.pipeline.push({ $unset: Array.isArray(fields) ? fields : [fields] });
-    return this;
-  }
-
-  bucketAuto(options) {
-    this.pipeline.push({ $bucketAuto: options });
-    return this;
-  }
-
-  changeStream(options = {}) {
-    this.pipeline.push({ $changeStream: options });
-    return this;
-  }
-
-  documents(docs) {
-    this.pipeline.push({ $documents: docs });
-    return this;
-  }
-
-  fill(options) {
-    this.pipeline.push({ $fill: options });
-    return this;
-  }
-
-  sample(size) {
-    this.pipeline.push({ $sample: { size } });
-    return this;
-  }
-
-  setWindowFields(options) {
-    this.pipeline.push({ $setWindowFields: options });
-    return this;
-  }
-
-  allowDiskUse(value) {
-    this.options.allowDiskUse = value;
+  search($search)         { this._pipeline.push({ $search }); return this; }
+  near(arg) {
+    if (!arg || typeof arg !== 'object') throw new Error('$geoNear requires valid arguments');
+    this._pipeline.unshift({ $geoNear: arg });
     return this;
   }
 
   append(...ops) {
-    if (Array.isArray(ops[0])) {
-      this.pipeline.push(...ops[0]);
-    } else {
-      this.pipeline.push(...ops);
-    }
+    const items = Array.isArray(ops[0]) ? ops[0] : ops;
+    this._pipeline.push(...items);
     return this;
   }
 
-  collation(options) {
-    this.options.collation = options;
-    return this;
-  }
+  allowDiskUse(value)     { this._options.allowDiskUse = value; return this; }
+  collation(opts)         { this._options.collation = opts; return this; }
+  cursor(opts = {})       { this._options.cursor = opts; return this; }
+  explain(verbosity)      { this._explain = verbosity || true; return this; }
+  hint(value)             { this._options.hint = value; return this; }
+  option(opts = {})       { Object.assign(this._options, opts); return this; }
+  read(pref)              { this._options.readPreference = pref; return this; }
+  readConcern(level)      { this._options.readConcern = { level }; return this; }
 
-  cursor(options = {}) {
-    this.options.cursor = options;
-    return this;
-  }
-
-  explain(verbosity) {
-    this._explain = verbosity || true;
-    return this;
-  }
-
-  hint(value) {
-    this.options.hint = value;
-    return this;
-  }
-
-  near(arg) {
-    if (!arg || typeof arg !== 'object') {
-      throw new Error('$geoNear requires valid arguments');
-    }
-    this.pipeline.unshift({ $geoNear: arg });
-    return this;
-  }
-
-  option(opts = {}) {
-    Object.assign(this.options, opts);
-    return this;
-  }
-
-  pipeline() {
-    return [...this.pipeline];
-  }
-
-  read(pref) {
-    this.options.readPreference = pref;
-    return this;
-  }
-
-  readConcern(level) {
-    this.options.readConcern = { level };
-    return this;
-  }
-
-  redact(expression, thenExpr, elseExpr) {
-    if (thenExpr && elseExpr) {
-      expression = {
-        $cond: {
-          if: expression,
-          then: thenExpr.startsWith('$$') ? thenExpr : `$$${thenExpr}`,
-          else: elseExpr.startsWith('$$') ? elseExpr : `$$${elseExpr}`
-        }
-      };
-    }
-    this.pipeline.push({ $redact: expression });
-    return this;
-  }
-
-  search($search) {
-    this.pipeline.push({ $search });
-    return this;
-  }
-
-  then(resolve, reject) {
-    return this.exec().then(resolve, reject);
-  }
-
-  catch(reject) {
-    return this.exec().catch(reject);
-  }
-
-  finally(onFinally) {
-    return this.exec().finally(onFinally);
-  }
+  then(resolve, reject)   { return this.exec().then(resolve, reject); }
+  catch(reject)           { return this.exec().catch(reject); }
+  finally(onFinally)      { return this.exec().finally(onFinally); }
 
   [Symbol.asyncIterator]() {
+    let cursor;
     return {
-      pipeline: this.pipeline,
-      model: this.model,
-      next: async function() {
-        if (!this._cursor) {
-          const results = await this.model._aggregate(this.pipeline);
-          this._cursor = results[Symbol.iterator]();
-        }
-        return this._cursor.next();
+      next: async () => {
+        if (!cursor) cursor = (await this.exec())[Symbol.iterator]();
+        return cursor.next();
       }
     };
   }
 
-  // === Pipeline Stage Execution Helpers ===
+  // ─── Stage implementations ─────────────────────────────────────────────────
   _group(docs, grouping) {
     const groups = new Map();
-    
+
     for (const doc of docs) {
       let key;
       if (grouping._id === null) {
-        key = 'null';
+        key = '__null__';
       } else if (typeof grouping._id === 'object' && !Array.isArray(grouping._id)) {
-        key = JSON.stringify(this._evaluateExpression(grouping._id, doc));
+        key = JSON.stringify(this._evalExpr(grouping._id, doc));
       } else {
-        key = this._evaluateExpression(grouping._id, doc);
+        key = this._evalExpr(grouping._id, doc);
       }
-      
+
       if (!groups.has(key)) {
-        const group = {};
-        for (const [field, accumulator] of Object.entries(grouping)) {
+        const init = {};
+        for (const [field, acc] of Object.entries(grouping)) {
           if (field === '_id') continue;
-          group[field] = this._initializeAccumulator(accumulator);
+          init[field] = this._initAccumulator(acc);
         }
-        groups.set(key, group);
+        groups.set(key, init);
       }
-      
+
       const group = groups.get(key);
-      for (const [field, accumulator] of Object.entries(grouping)) {
+      for (const [field, acc] of Object.entries(grouping)) {
         if (field === '_id') continue;
-        this._updateAccumulator(group, field, accumulator, doc);
+        this._updateAccumulator(group, field, acc, doc);
       }
     }
-    
-    return Array.from(groups.entries()).map(([key, value]) => ({
-      _id: key === 'null' ? null : key,
-      ...value
-    }));
-  }
 
-  _sort(docs, sorting) {
-    return [...docs].sort((a, b) => {
-      for (const [field, order] of Object.entries(sorting)) {
-        const aVal = this._getFieldValue(a, field);
-        const bVal = this._getFieldValue(b, field);
-        if (aVal < bVal) return -order;
-        if (aVal > bVal) return order;
-      }
-      return 0;
-    });
-  }
-
-  _unwind(docs, path) {
-    const result = [];
-    const fieldPath = path.startsWith('$') ? path.slice(1) : path;
-    
-    for (const doc of docs) {
-      const array = this._getFieldValue(doc, fieldPath);
-      if (!Array.isArray(array)) {
-        result.push(doc);
-        continue;
-      }
-      
-      for (const item of array) {
-        const newDoc = { ...doc };
-        this._setFieldValue(newDoc, fieldPath, item);
-        result.push(newDoc);
-      }
-    }
-    
-    return result;
-  }
-
-  _densify(docs, options) {
-    const { field, range, partitionByFields = [] } = options;
-  
-    if (!range || !field) {
-      throw new Error('$densify requires both a "field" and a "range" property.');
-    }
-  
-    const { step, unit, bounds } = range;
-  
-    // Helper function to increment based on unit
-    const incrementValue = (value) => {
-      switch (unit) {
-        case 'days':
-          return new Date(value.setDate(value.getDate() + step));
-        case 'hours':
-          return new Date(value.setHours(value.getHours() + step));
-        case 'minutes':
-          return new Date(value.setMinutes(value.getMinutes() + step));
-        default:
-          return value + step;
-      }
-    };
-  
-    const groups = partitionByFields.length
-      ? this._groupByPartition(docs, partitionByFields)
-      : { global: docs };
-  
-    const result = [];
-  
-    for (const group of Object.values(groups)) {
-      const values = group.map(doc => doc[field]).sort((a, b) => a - b);
-  
-      const start = bounds && bounds[0] !== undefined 
-        ? new Date(bounds[0]) 
-        : new Date(Math.min(...values));
-      const end = bounds && bounds[1] !== undefined 
-        ? new Date(bounds[1]) 
-        : new Date(Math.max(...values));
-  
-      let current = new Date(start);
-      while (current <= end) {
-        const existingDoc = group.find(doc => {
-          const docDate = new Date(doc[field]);
-          return docDate.getTime() === current.getTime();
-        });
-  
-        if (existingDoc) {
-          result.push(existingDoc);
+    return Array.from(groups.entries()).map(([key, value]) => {
+      const result = { _id: key === '__null__' ? null : key };
+      for (const [field, acc] of Object.entries(grouping)) {
+        if (field === '_id') continue;
+        const op = Object.keys(acc)[0];
+        // Finalize avg accumulator
+        if (op === '$avg') {
+          const v = value[field];
+          result[field] = v && v._count > 0 ? v._sum / v._count : 0;
+        } else if (op === '$stdDevPop' || op === '$stdDevSamp') {
+          const v = value[field];
+          if (!v || v._count === 0) { result[field] = null; continue; }
+          const mean = v._sum / v._count;
+          const variance = v._sumSq / v._count - mean * mean;
+          result[field] = op === '$stdDevPop' ? Math.sqrt(Math.max(0, variance)) : Math.sqrt(Math.max(0, variance * v._count / (v._count - 1)));
         } else {
-          const newDoc = {};
-          for (const partitionField of partitionByFields) {
-            newDoc[partitionField] = group[0][partitionField];
-          }
-          newDoc[field] = new Date(current);
-          result.push(newDoc);
+          result[field] = value[field];
         }
-  
-        current = incrementValue(current);
       }
-    }
-  
-    return result;
-  }
-
-  _facet(docs, facets) {
-    const result = {};
-    for (const [name, pipeline] of Object.entries(facets)) {
-      const facetAgg = new Aggregate(this.model, pipeline);
-      // Use a synchronous version of the pipeline execution
-      result[name] = this._executePipelineSync(docs, pipeline);
-    }
-    return result;
-  }
-  
-  _graphLookup(docs, options) {
-    // Input validation
-    if (!docs || !options) {
-      throw new Error('Invalid input: docs and options are required');
-    }
-
-    const {
-      from,                     // The collection to search
-      startWith,                // Initial field to start the recursion
-      connectFromField,         // Source field for connections
-      connectToField,           // Target field for connections
-      as,                       // Output array field
-      maxDepth = Infinity,      // Optional depth limit
-      depthField = null 
-    } = options;
-
-    // Additional validation
-    if (!from || !startWith || !connectFromField || !connectToField || !as) {
-      throw new Error('Missing required graph lookup parameters');
-    }
-
-    const foreignDocs = this.model._getCollection(from);
-    if (!foreignDocs) {
-      throw new Error(`Collection '${from}' not found`);
-    }
-
-    // Create an index for faster lookups
-    const connectionsMap = new Map();
-    foreignDocs.forEach(doc => {
-      const key = this._getFieldValue(doc, connectFromField);
-      if (!connectionsMap.has(key)) {
-        connectionsMap.set(key, []);
-      }
-      connectionsMap.get(key).push(doc);
-    });
-
-    const results = [];
-    const visitedDocs = new Set(); // To prevent circular references
-
-    const buildConnections = (doc, currentDepth = 0) => {
-      if (currentDepth > maxDepth) return [];
-
-      const valueToMatch = this._getFieldValue(doc, startWith);
-      const connectedDocs = connectionsMap.get(valueToMatch) || [];
-
-      const connections = connectedDocs.filter(connectedDoc => {
-        // Check if the connected doc matches the connectToField
-        const toFieldValue = this._getFieldValue(connectedDoc, connectToField);
-
-        // Prevent circular references
-        const docKey = JSON.stringify(connectedDoc);
-        if (visitedDocs.has(docKey)) return false;
-
-        return toFieldValue === valueToMatch;
-      }).map(connectedDoc => {
-        const resultDoc = { ...connectedDoc };
-        if (depthField) {
-          resultDoc[depthField] = currentDepth;
-        }
-
-        // Recursive call with depth tracking
-        resultDoc[as] = buildConnections(connectedDoc, currentDepth + 1);
-
-        const docKey = JSON.stringify(connectedDoc);
-        visitedDocs.delete(docKey);
-
-        return resultDoc;
-      });
-
-      return connections;
-    };
-
-    for (const doc of docs) {
-      visitedDocs.clear(); // Reset visited docs for each root document
-      doc[as] = buildConnections(doc);
-      results.push(doc);
-    }
-
-    return results;
-  }
-
-  _unionWith(docs, { coll, pipeline }) {
-    const additionalDocs = this.model._getCollection(coll);
-    const unionDocs = pipeline.length ? new Aggregate(this.model, pipeline).execSync(additionalDocs) : additionalDocs;
-    return [...docs, ...unionDocs];
-  }
-
-  _sortByCount(docs, field) {
-    const counts = docs.reduce((acc, doc) => {
-      const key = this._getFieldValue(doc, field);
-      acc[key] = (acc[key] || 0) + 1;
-      return acc;
-    }, {});
-
-    return Object.entries(counts)
-      .map(([key, count]) => ({ _id: key, count }))
-      .sort((a, b) => b.count - a.count);
-  }
-
-  _bucketAuto(docs, operation) {
-    const { groupBy, buckets, output = {} } = operation;
-    const values = docs.map(doc => this._evaluateExpression(groupBy, doc)).sort((a, b) => a - b);
-    const bucketSize = Math.ceil(values.length / buckets);
-    
-    return Array.from({ length: buckets }, (_, i) => {
-      const start = i * bucketSize;
-      const end = (i + 1) * bucketSize;
-      
-      const bucketDocs = docs.filter((doc, index) => 
-        index >= start && index < Math.min(end, docs.length)
-      );
-      
-      return {
-        _id: { 
-          min: values[start], 
-          max: values[Math.min(end - 1, values.length - 1)] 
-        },
-        count: bucketDocs.length,
-        ...this._computeOutputFields(bucketDocs, output)
-      };
+      return result;
     });
   }
 
-  _changeStream(docs, operation) {
-    // Placeholder for change stream logic
-    return docs;
-  }
-
-  _documents(docs, operation) {
-    return Array.isArray(operation) ? operation : [operation];
-  }
-
-  _fill(docs, operation) {
-    const { sortBy, output } = operation;
-    const sortedDocs = sortBy ? this._sort(docs, sortBy) : [...docs];
-    
-    return sortedDocs.map(doc => {
-      const filledDoc = { ...doc };
-      
-      for (const [field, method] of Object.entries(output)) {
-        if (filledDoc[field] === null || filledDoc[field] === undefined) {
-          switch (method) {
-            case 'linear':
-              const docIndex = sortedDocs.indexOf(doc);
-              const prevDoc = sortedDocs[docIndex - 1];
-              const nextDoc = sortedDocs[docIndex + 1];
-              if (prevDoc && nextDoc) {
-                filledDoc[field] = (prevDoc[field] + nextDoc[field]) / 2;
-              }
-              break;
-            case 'locf':
-              const lastValidDoc = sortedDocs.findLast(d => 
-                d[field] !== null && d[field] !== undefined
-              );
-              if (lastValidDoc) {
-                filledDoc[field] = lastValidDoc[field];
-              }
-              break;
-          }
-        }
-      }
-      
-      return filledDoc;
-    });
-  }
-
-  _sample(docs, size) {
-    return docs
-      .sort(() => 0.5 - Math.random())
-      .slice(0, size);
-  }
-
-  _setWindowFields(docs, operation) {
-    const { partitionBy, sortBy, output } = operation;
-    
-    const partitionedDocs = partitionBy 
-      ? this._partitionDocuments(docs, partitionBy) 
-      : [docs];
-    
-    return partitionedDocs.flatMap(partition => 
-      this._computeWindowFields(partition, sortBy, output)
-    );
-  }
-
-  // === Utility Methods ===
-  _getFieldValue(doc, path) {
-    if (!path) return doc;
-    
-    // Handle dot notation for nested fields
-    const parts = path.split('.');
-    let value = doc;
-    
-    for (const part of parts) {
-      if (value == null) return null;
-      
-      // Handle array field references (e.g., 'posts.likes')
-      if (Array.isArray(value)) {
-        // Map through array and get the specified field from each element
-        return value.map(item => this._getFieldValue(item, part));
-      }
-      
-      value = value[part];
-    }
-    
-    return value;
-  }
-
-  _setFieldValue(doc, path, value) {
-    const parts = path.split('.');
-    const last = parts.pop();
-    const target = parts.reduce((obj, key) => obj[key], doc);
-    target[last] = value;
-  }
-
-  _evaluateExpression(expr, doc) {
-    if (typeof expr === 'string' && expr.startsWith('$')) {
-      return this._getFieldValue(doc, expr.slice(1));
-    }
-    
-    if (typeof expr === 'object') {
-      // Size operator
-      if (expr.$size) {
-        const array = this._evaluateExpression(expr.$size, doc);
-        return Array.isArray(array) ? array.length : 0;
-      }
-  
-      // Sum operator
-      if (expr.$sum) {
-        if (Array.isArray(expr.$sum)) {
-          return expr.$sum.reduce((sum, val) => 
-            sum + this._evaluateExpression(val, doc), 0);
-        }
-        const array = this._evaluateExpression(expr.$sum, doc);
-        return Array.isArray(array) ? array.reduce((a, b) => a + (b || 0), 0) : 0;
-      }
-      
-      // Arithmetic expressions
-      if (expr.$add) {
-        return expr.$add.reduce((sum, val) => 
-          sum + this._evaluateExpression(val, doc), 0);
-      }
-      if (expr.$multiply) {
-        return expr.$multiply.reduce((product, val) => 
-          product * this._evaluateExpression(val, doc), 1);
-      }
-      
-      // Comparison operators
-      if (expr.$eq) return this._evaluateExpression(expr.$eq[0], doc) === this._evaluateExpression(expr.$eq[1], doc);
-      if (expr.$gt) return this._evaluateExpression(expr.$gt[0], doc) > this._evaluateExpression(expr.$gt[1], doc);
-      
-      // Logical operators
-      if (expr.$and) return expr.$and.every(condition => this._evaluateExpression(condition, doc));
-      if (expr.$or) return expr.$or.some(condition => this._evaluateExpression(condition, doc));
-      
-      // Date operators
-      if (expr.$year) {
-        const date = this._evaluateExpression(expr.$year, doc);
-        return new Date(date).getFullYear();
-      }
-    }
-    
-    return expr;
-  }
-
-  _initializeAccumulator(accumulator) {
-    const operator = Object.keys(accumulator)[0];
-    switch (operator) {
-      case '$sum': return 0;
-      case '$avg': return { sum: 0, count: 0 };
-      case '$min': return Infinity;
-      case '$max': return -Infinity;
-      case '$push': return [];
-      case '$first': return null;
-      case '$last': return null;
+  _initAccumulator(acc) {
+    const op = Object.keys(acc)[0];
+    switch (op) {
+      case '$sum':        return 0;
+      case '$avg':        return { _sum: 0, _count: 0 };
+      case '$min':        return Infinity;
+      case '$max':        return -Infinity;
+      case '$push':       return [];
+      case '$addToSet':   return [];
+      case '$first':      return undefined;
+      case '$last':       return undefined;
+      case '$stdDevPop':  return { _sum: 0, _sumSq: 0, _count: 0 };
+      case '$stdDevSamp': return { _sum: 0, _sumSq: 0, _count: 0 };
+      case '$mergeObjects': return {};
+      case '$count':      return 0;
       default: return null;
     }
   }
 
   _updateAccumulator(group, field, spec, doc) {
-    const operator = Object.keys(spec)[0];
-    const fieldPath = spec[operator];
-    const value = this._evaluateExpression(fieldPath, doc);
-    
-    switch (operator) {
+    const op = Object.keys(spec)[0];
+    const fieldPath = spec[op];
+    const value = this._evalExpr(fieldPath, doc);
+
+    switch (op) {
       case '$sum':
-        group[field] += value;
+        if (typeof value === 'number') group[field] += value;
+        else if (typeof fieldPath === 'number') group[field] += fieldPath;
         break;
       case '$avg':
-        group[field].sum += value;
-        group[field].count++;
-        group[field].value = group[field].sum / group[field].count;
+        if (typeof value === 'number') { group[field]._sum += value; group[field]._count++; }
         break;
       case '$min':
-        group[field] = Math.min(group[field], value);
+        if (value !== undefined && value !== null) group[field] = Math.min(group[field], value);
         break;
       case '$max':
-        group[field] = Math.max(group[field], value);
+        if (value !== undefined && value !== null) group[field] = Math.max(group[field], value);
         break;
       case '$push':
         group[field].push(value);
         break;
+      case '$addToSet':
+        if (!group[field].some(e => JSON.stringify(e) === JSON.stringify(value))) group[field].push(value);
+        break;
       case '$first':
-        if (group[field] === null) {
-          group[field] = value;
-        }
+        if (group[field] === undefined) group[field] = value;
         break;
       case '$last':
         group[field] = value;
         break;
+      case '$stdDevPop': case '$stdDevSamp':
+        if (typeof value === 'number') { group[field]._sum += value; group[field]._sumSq += value * value; group[field]._count++; }
+        break;
+      case '$mergeObjects':
+        if (value && typeof value === 'object') Object.assign(group[field], value);
+        break;
+      case '$count':
+        group[field]++;
+        break;
     }
   }
 
-  _calculateAccumulator(docs, accumulator) {
-    const operator = Object.keys(accumulator)[0];
-    const field = accumulator[operator];
-
-    switch (operator) {
-      case '$sum':
-        return docs.reduce((sum, doc) => sum + (doc[field] || 0), 0);
-      case '$avg':
-        const values = docs.map(doc => doc[field]).filter(v => v !== null);
-        return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
-      case '$max':
-        return Math.max(...docs.map(doc => doc[field]).filter(v => v !== null));
-      case '$min':
-        return Math.min(...docs.map(doc => doc[field]).filter(v => v !== null));
-    }
+  _sortDocs(docs, sorting) {
+    return [...docs].sort((a, b) => {
+      for (const [field, order] of Object.entries(sorting)) {
+        const av = getNestedValue(a, field);
+        const bv = getNestedValue(b, field);
+        if (av < bv) return -order;
+        if (av > bv) return order;
+      }
+      return 0;
+    });
   }
 
-  _groupByPartition(docs, partitionFields) {
+  _unwind(docs, p) {
+    const result = [];
+    const fieldPath = typeof p === 'object' ? p.path.replace(/^\$/, '') : p.replace(/^\$/, '');
+    const preserveNull = typeof p === 'object' && p.preserveNullAndEmptyArrays;
+    const includeIdx  = typeof p === 'object' && p.includeArrayIndex;
+
+    for (const doc of docs) {
+      const array = getNestedValue(doc, fieldPath);
+      if (!Array.isArray(array) || array.length === 0) {
+        if (preserveNull) result.push({ ...doc });
+        continue;
+      }
+      array.forEach((item, idx) => {
+        const nd = { ...doc };
+        nd[fieldPath] = item;
+        if (includeIdx) nd[includeIdx] = idx;
+        result.push(nd);
+      });
+    }
+    return result;
+  }
+
+  _project(doc, projection) {
+    const hasInclusion = Object.values(projection).some(v => v === 1 || (typeof v === 'object' && v !== null));
+    const result = {};
+    if (hasInclusion) {
+      if (projection._id !== 0) result._id = doc._id;
+      for (const [f, spec] of Object.entries(projection)) {
+        if (spec === 1) result[f] = getNestedValue(doc, f);
+        else if (spec === 0) {} // exclusion handled below
+        else if (typeof spec === 'object' && spec !== null) result[f] = this._evalExpr(spec, doc);
+      }
+    } else {
+      Object.assign(result, doc);
+      for (const [f, spec] of Object.entries(projection)) {
+        if (spec === 0) delete result[f];
+      }
+    }
+    return result;
+  }
+
+  async _lookup(docs, { from, localField, foreignField, as, pipeline: pl, let: letVars }) {
+    let foreignDocs = this.model._getCollection(from);
+    if (!Array.isArray(foreignDocs)) foreignDocs = [];
+    return docs.map(doc => {
+      const localValue = getNestedValue(doc, localField);
+      const matches = foreignDocs.filter(fd => {
+        const fv = getNestedValue(fd, foreignField);
+        if (Array.isArray(localValue)) return localValue.some(lv => String(lv) === String(fv));
+        return String(getNestedValue(fd, foreignField)) === String(localValue);
+      });
+      return { ...doc, [as]: matches };
+    });
+  }
+
+  async _merge(docs, { into, on = '_id', whenMatched = 'merge', whenNotMatched = 'insert' }) {
+    const targetPath = path.join(this.model.connection.dbPath, `${into}.json`);
+    const targetDocs = await readJSON(targetPath);
+    for (const doc of docs) {
+      const idx = targetDocs.findIndex(td => String(getNestedValue(td, on)) === String(getNestedValue(doc, on)));
+      if (idx !== -1) {
+        if (whenMatched === 'replace') targetDocs[idx] = doc;
+        else if (whenMatched === 'merge') Object.assign(targetDocs[idx], doc);
+        // 'keepExisting' → do nothing
+      } else if (whenNotMatched === 'insert') {
+        targetDocs.push(doc);
+      }
+    }
+    await writeJSON(targetPath, targetDocs);
+    return docs;
+  }
+
+  async _out(docs, collection) {
+    const targetPath = path.join(this.model.connection.dbPath, `${collection}.json`);
+    await writeJSON(targetPath, docs);
+    return docs;
+  }
+
+  async _facet(docs, facets) {
+    const result = {};
+    for (const [name, pl] of Object.entries(facets)) {
+      const facetAgg = new Aggregate(this.model, pl);
+      result[name] = await facetAgg._executePipeline(docs);
+    }
+    return result;
+  }
+
+  async _executePipeline(inputDocs) {
+    let docs = [...inputDocs];
+    for (const stage of this._pipeline) {
+      const op = Object.keys(stage)[0];
+      const operation = stage[op];
+      switch (op) {
+        case '$match': docs = docs.filter(d => this.model._matchQuery(d, operation)); break;
+        case '$group': docs = this._group(docs, operation); break;
+        case '$sort':  docs = this._sortDocs(docs, operation); break;
+        case '$limit': docs = docs.slice(0, operation); break;
+        case '$skip':  docs = docs.slice(operation); break;
+        case '$unwind': docs = this._unwind(docs, operation); break;
+        case '$project': docs = docs.map(d => this._project(d, operation)); break;
+        case '$addFields': case '$set':
+          docs = docs.map(d => { const nd = { ...d }; for (const [f, v] of Object.entries(operation)) nd[f] = this._evalExpr(v, d); return nd; }); break;
+        case '$unset':
+          docs = docs.map(d => { const nd = { ...d }; for (const f of (Array.isArray(operation) ? operation : [operation])) delete nd[f]; return nd; }); break;
+        case '$lookup':  docs = await this._lookup(docs, operation); break;
+        case '$count':   docs = [{ [operation]: docs.length }]; break;
+        case '$sample':  docs = this._sample(docs, operation.size); break;
+        case '$replaceRoot': docs = docs.map(d => this._evalExpr(operation.newRoot, d)); break;
+        default: break;
+      }
+    }
+    return docs;
+  }
+
+  _graphLookup(docs, { from, startWith, connectFromField, connectToField, as, maxDepth = Infinity, depthField }) {
+    if (!from || !startWith || !connectFromField || !connectToField || !as) throw new Error('Missing required graph lookup parameters');
+    const foreignDocs = this.model._getCollection(from) || [];
+    const connectMap = new Map();
+    foreignDocs.forEach(doc => {
+      const key = String(getNestedValue(doc, connectFromField));
+      if (!connectMap.has(key)) connectMap.set(key, []);
+      connectMap.get(key).push(doc);
+    });
+
+    return docs.map(doc => {
+      const visited = new Set();
+      const build = (d, depth = 0) => {
+        if (depth > maxDepth) return [];
+        const startVal = String(this._evalExpr(startWith, d));
+        const connected = (connectMap.get(startVal) || []).filter(cd => {
+          const key = JSON.stringify(cd);
+          if (visited.has(key)) return false;
+          visited.add(key);
+          return String(getNestedValue(cd, connectToField)) === startVal;
+        });
+        return connected.map(cd => {
+          const r = { ...cd };
+          if (depthField) r[depthField] = depth;
+          r[as] = build(cd, depth + 1);
+          return r;
+        });
+      };
+      return { ...doc, [as]: build(doc) };
+    });
+  }
+
+  async _unionWith(docs, { coll, pipeline: pl }) {
+    const additionalDocs = this.model._getCollection(coll) || [];
+    if (pl && pl.length) {
+      const unionAgg = new Aggregate(this.model, pl);
+      const unionDocs = await unionAgg._executePipeline(additionalDocs);
+      return [...docs, ...unionDocs];
+    }
+    return [...docs, ...additionalDocs];
+  }
+
+  _sortByCount(docs, field) {
+    const counts = docs.reduce((acc, doc) => {
+      const key = this._evalExpr(field, doc);
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    return Object.entries(counts).map(([k, c]) => ({ _id: k, count: c })).sort((a, b) => b.count - a.count);
+  }
+
+  _bucket(docs, { groupBy, boundaries, default: defaultBucket, output = {} }) {
+    const buckets = {};
+    for (const doc of docs) {
+      const v = this._evalExpr(groupBy, doc);
+      let bucketKey = boundaries.findIndex(b => v < b);
+      if (bucketKey === -1) { if (defaultBucket !== undefined) bucketKey = 'default'; else continue; }
+      else bucketKey = bucketKey > 0 ? boundaries[bucketKey - 1] : boundaries[0];
+      if (!buckets[bucketKey]) {
+        buckets[bucketKey] = { _id: bucketKey, count: 0 };
+        for (const [f, acc] of Object.entries(output)) buckets[bucketKey][f] = this._initAccumulator(acc);
+      }
+      buckets[bucketKey].count++;
+      for (const [f, acc] of Object.entries(output)) this._updateAccumulator(buckets[bucketKey], f, acc, doc);
+    }
+    return Object.values(buckets).map(b => this._finalizeGroup(b, output));
+  }
+
+  _bucketAuto(docs, { groupBy, buckets: numBuckets, output = {} }) {
+    const values = docs.map((doc, i) => ({ val: this._evalExpr(groupBy, doc), doc, i })).sort((a, b) => a.val - b.val);
+    const size = Math.ceil(values.length / numBuckets);
+    return Array.from({ length: numBuckets }, (_, i) => {
+      const slice = values.slice(i * size, (i + 1) * size);
+      if (!slice.length) return null;
+      const bucket = { _id: { min: slice[0].val, max: slice[slice.length - 1].val }, count: slice.length };
+      for (const [f, acc] of Object.entries(output)) {
+        bucket[f] = this._initAccumulator(acc);
+        slice.forEach(({ doc }) => this._updateAccumulator(bucket, f, acc, doc));
+      }
+      return this._finalizeGroup(bucket, output);
+    }).filter(Boolean);
+  }
+
+  _finalizeGroup(group, accumulators) {
+    const result = { ...group };
+    for (const [f, acc] of Object.entries(accumulators)) {
+      const op = Object.keys(acc)[0];
+      if (op === '$avg' && result[f] && result[f]._count !== undefined) {
+        result[f] = result[f]._count > 0 ? result[f]._sum / result[f]._count : 0;
+      }
+    }
+    return result;
+  }
+
+  _densify(docs, { field, range, partitionByFields = [] }) {
+    if (!field || !range) throw new Error('$densify requires "field" and "range"');
+    const { step, unit, bounds } = range;
+    const increment = (v) => {
+      const d = new Date(v);
+      if (unit === 'day' || unit === 'days')    { d.setDate(d.getDate() + step); return d; }
+      if (unit === 'hour' || unit === 'hours')  { d.setHours(d.getHours() + step); return d; }
+      if (unit === 'minute' || unit === 'minutes') { d.setMinutes(d.getMinutes() + step); return d; }
+      return v + step;
+    };
+    const groups = partitionByFields.length ? this._groupByPartition(docs, partitionByFields) : { __all__: docs };
+    const result = [];
+    for (const group of Object.values(groups)) {
+      const vals = group.map(d => d[field]).sort((a, b) => a - b);
+      const start = bounds && bounds[0] !== undefined ? new Date(bounds[0]) : new Date(Math.min(...vals));
+      const end   = bounds && bounds[1] !== undefined ? new Date(bounds[1]) : new Date(Math.max(...vals));
+      let cur = new Date(start);
+      while (cur <= end) {
+        const existing = group.find(d => new Date(d[field]).getTime() === cur.getTime());
+        if (existing) { result.push(existing); }
+        else {
+          const nd = {};
+          for (const pf of partitionByFields) nd[pf] = group[0][pf];
+          nd[field] = new Date(cur);
+          result.push(nd);
+        }
+        cur = increment(cur);
+      }
+    }
+    return result;
+  }
+
+  _fill(docs, { sortBy, output }) {
+    const sorted = sortBy ? this._sortDocs(docs, sortBy) : [...docs];
+    return sorted.map((doc, idx) => {
+      const filled = { ...doc };
+      for (const [field, method] of Object.entries(output)) {
+        if (filled[field] === null || filled[field] === undefined) {
+          if (method === 'linear' || (method && method.method === 'linear')) {
+            const prev = sorted.slice(0, idx).reverse().find(d => d[field] != null);
+            const next = sorted.slice(idx + 1).find(d => d[field] != null);
+            if (prev && next) filled[field] = (prev[field] + next[field]) / 2;
+          } else if (method === 'locf' || (method && method.method === 'locf')) {
+            const last = sorted.slice(0, idx).reverse().find(d => d[field] != null);
+            if (last) filled[field] = last[field];
+          } else if (method && method.value !== undefined) {
+            filled[field] = method.value;
+          }
+        }
+      }
+      return filled;
+    });
+  }
+
+  _sample(docs, size) {
+    const shuffled = [...docs].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, size);
+  }
+
+  _setWindowFields(docs, { partitionBy, sortBy, output }) {
+    const partitions = partitionBy ? this._groupByPartition(docs, Array.isArray(partitionBy) ? partitionBy : [partitionBy]) : { __all__: docs };
+    const result = [];
+    for (const partition of Object.values(partitions)) {
+      const sorted = sortBy ? this._sortDocs(partition, sortBy) : partition;
+      sorted.forEach((doc, idx) => {
+        const nd = { ...doc };
+        for (const [field, spec] of Object.entries(output)) {
+          const op = Object.keys(spec)[0];
+          const fieldExpr = spec[op];
+          const window = spec.window;
+          let windowDocs = sorted;
+          if (window && (window.documents || window.range)) {
+            const range = window.documents || window.range;
+            const from = range[0] === 'unbounded' ? 0 : idx + (range[0] || 0);
+            const to   = range[1] === 'unbounded' ? sorted.length - 1 : idx + (range[1] || 0);
+            windowDocs = sorted.slice(Math.max(0, from), to + 1);
+          }
+          switch (op) {
+            case '$sum':  nd[field] = windowDocs.reduce((s, d) => s + (this._evalExpr(fieldExpr, d) || 0), 0); break;
+            case '$avg':  { const vs = windowDocs.map(d => this._evalExpr(fieldExpr, d)).filter(v => v != null); nd[field] = vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null; break; }
+            case '$min':  nd[field] = Math.min(...windowDocs.map(d => this._evalExpr(fieldExpr, d)).filter(v => v != null)); break;
+            case '$max':  nd[field] = Math.max(...windowDocs.map(d => this._evalExpr(fieldExpr, d)).filter(v => v != null)); break;
+            case '$count': nd[field] = windowDocs.length; break;
+            case '$rank':  nd[field] = idx + 1; break;
+            case '$denseRank': nd[field] = idx + 1; break;
+            case '$documentNumber': nd[field] = idx + 1; break;
+            case '$first': nd[field] = windowDocs[0] ? this._evalExpr(fieldExpr, windowDocs[0]) : null; break;
+            case '$last':  nd[field] = windowDocs[windowDocs.length - 1] ? this._evalExpr(fieldExpr, windowDocs[windowDocs.length - 1]) : null; break;
+            case '$shift': { const offset = spec.by || 0; const target = sorted[idx + offset]; nd[field] = target ? this._evalExpr(fieldExpr, target) : (spec.default !== undefined ? spec.default : null); break; }
+          }
+        }
+        result.push(nd);
+      });
+    }
+    return result;
+  }
+
+  // ─── Expression evaluator ──────────────────────────────────────────────────
+  _evalExpr(expr, doc) {
+    if (expr === null || expr === undefined) return expr;
+    if (typeof expr === 'string' && expr.startsWith('$')) {
+      return getNestedValue(doc, expr.slice(1));
+    }
+    if (typeof expr !== 'object' || Array.isArray(expr)) return expr;
+
+    // Arithmetic
+    if (expr.$add)      return expr.$add.reduce((s, e) => s + (this._evalExpr(e, doc) || 0), 0);
+    if (expr.$subtract) { const [a, b] = expr.$subtract.map(e => this._evalExpr(e, doc)); return a - b; }
+    if (expr.$multiply) return expr.$multiply.reduce((p, e) => p * (this._evalExpr(e, doc) || 1), 1);
+    if (expr.$divide)   { const [a, b] = expr.$divide.map(e => this._evalExpr(e, doc)); return a / b; }
+    if (expr.$mod)      { const [a, b] = expr.$mod.map(e => this._evalExpr(e, doc)); return a % b; }
+    if (expr.$abs)      return Math.abs(this._evalExpr(expr.$abs, doc));
+    if (expr.$ceil)     return Math.ceil(this._evalExpr(expr.$ceil, doc));
+    if (expr.$floor)    return Math.floor(this._evalExpr(expr.$floor, doc));
+    if (expr.$round)    { const [v, place = 0] = Array.isArray(expr.$round) ? expr.$round.map(e => this._evalExpr(e, doc)) : [this._evalExpr(expr.$round, doc), 0]; return Math.round(v * Math.pow(10, place)) / Math.pow(10, place); }
+    if (expr.$sqrt)     return Math.sqrt(this._evalExpr(expr.$sqrt, doc));
+    if (expr.$pow)      { const [b, exp] = expr.$pow.map(e => this._evalExpr(e, doc)); return Math.pow(b, exp); }
+    if (expr.$log)      { const [n, base] = expr.$log.map(e => this._evalExpr(e, doc)); return Math.log(n) / Math.log(base); }
+    if (expr.$ln)       return Math.log(this._evalExpr(expr.$ln, doc));
+    if (expr.$exp)      return Math.exp(this._evalExpr(expr.$exp, doc));
+    if (expr.$trunc)    return Math.trunc(this._evalExpr(expr.$trunc, doc));
+
+    // Arrays
+    if (expr.$size)     { const arr = this._evalExpr(expr.$size, doc); return Array.isArray(arr) ? arr.length : 0; }
+    if (expr.$sum)      { if (typeof expr.$sum === 'number') return expr.$sum; const arr = this._evalExpr(expr.$sum, doc); return Array.isArray(arr) ? arr.reduce((a, b) => a + (b || 0), 0) : (arr || 0); }
+    if (expr.$avg)      { const arr = this._evalExpr(expr.$avg, doc); if (!Array.isArray(arr) || !arr.length) return null; return arr.reduce((a, b) => a + b, 0) / arr.length; }
+    if (expr.$min)      { const arr = this._evalExpr(expr.$min, doc); return Array.isArray(arr) ? Math.min(...arr) : arr; }
+    if (expr.$max)      { const arr = this._evalExpr(expr.$max, doc); return Array.isArray(arr) ? Math.max(...arr) : arr; }
+    if (expr.$first)    { const arr = this._evalExpr(expr.$first, doc); return Array.isArray(arr) ? arr[0] : arr; }
+    if (expr.$last)     { const arr = this._evalExpr(expr.$last, doc); return Array.isArray(arr) ? arr[arr.length - 1] : arr; }
+    if (expr.$push)     return [this._evalExpr(expr.$push, doc)];
+    if (expr.$concatArrays) return expr.$concatArrays.reduce((acc, e) => { const a = this._evalExpr(e, doc); return acc.concat(Array.isArray(a) ? a : []); }, []);
+    if (expr.$filter)   { const { input, as: alias, cond } = expr.$filter; const arr = this._evalExpr(input, doc); if (!Array.isArray(arr)) return []; return arr.filter(item => this._evalExpr(cond, { ...doc, [`$${alias || 'this'}`]: item, [alias || 'this']: item })); }
+    if (expr.$map)      { const { input, as: alias, in: inExpr } = expr.$map; const arr = this._evalExpr(input, doc); if (!Array.isArray(arr)) return []; return arr.map(item => this._evalExpr(inExpr, { ...doc, [alias || 'this']: item })); }
+    if (expr.$reduce)   { const { input, initialValue, in: inExpr } = expr.$reduce; const arr = this._evalExpr(input, doc) || []; return arr.reduce((acc, el) => this._evalExpr(inExpr, { ...doc, value: acc, this: el }), this._evalExpr(initialValue, doc)); }
+    if (expr.$arrayElemAt) { const [arr, idx] = expr.$arrayElemAt.map(e => this._evalExpr(e, doc)); return Array.isArray(arr) ? arr[idx < 0 ? arr.length + idx : idx] : null; }
+    if (expr.$indexOfArray) { const [arr, item] = expr.$indexOfArray.map(e => this._evalExpr(e, doc)); return Array.isArray(arr) ? arr.findIndex(e => JSON.stringify(e) === JSON.stringify(item)) : -1; }
+    if (expr.$in)       { const [item, arr] = expr.$in.map(e => this._evalExpr(e, doc)); return Array.isArray(arr) && arr.includes(item); }
+    if (expr.$slice)    { const [arr, ...args] = expr.$slice.map(e => this._evalExpr(e, doc)); return Array.isArray(arr) ? (args.length === 2 ? arr.slice(args[0], args[0] + args[1]) : arr.slice(0, args[0])) : []; }
+    if (expr.$range)    { const [start, end, step = 1] = expr.$range.map(e => this._evalExpr(e, doc)); const r = []; for (let i = start; step > 0 ? i < end : i > end; i += step) r.push(i); return r; }
+    if (expr.$reverseArray) { const arr = this._evalExpr(expr.$reverseArray, doc); return Array.isArray(arr) ? [...arr].reverse() : []; }
+    if (expr.$zip)      { const inputs = (expr.$zip.inputs || []).map(e => this._evalExpr(e, doc)); const len = Math.max(...inputs.map(a => a.length)); return Array.from({ length: len }, (_, i) => inputs.map(a => a[i])); }
+    if (expr.$setUnion)      return [...new Set(expr.$setUnion.flatMap(e => this._evalExpr(e, doc) || []))];
+    if (expr.$setIntersection) { const sets = expr.$setIntersection.map(e => this._evalExpr(e, doc) || []); return sets[0].filter(v => sets.every(s => s.includes(v))); }
+    if (expr.$setDifference)   { const [a, b] = expr.$setDifference.map(e => this._evalExpr(e, doc) || []); return a.filter(v => !b.includes(v)); }
+    if (expr.$setIsSubset)     { const [a, b] = expr.$setIsSubset.map(e => this._evalExpr(e, doc) || []); return a.every(v => b.includes(v)); }
+
+    // Strings
+    if (expr.$concat)      return expr.$concat.map(e => String(this._evalExpr(e, doc) ?? '')).join('');
+    if (expr.$toUpper)     return String(this._evalExpr(expr.$toUpper, doc) ?? '').toUpperCase();
+    if (expr.$toLower)     return String(this._evalExpr(expr.$toLower, doc) ?? '').toLowerCase();
+    if (expr.$trim)        { const v = String(this._evalExpr(expr.$trim.input || expr.$trim, doc) ?? ''); return v.trim(); }
+    if (expr.$ltrim)       return String(this._evalExpr(expr.$ltrim.input || expr.$ltrim, doc) ?? '').trimStart();
+    if (expr.$rtrim)       return String(this._evalExpr(expr.$rtrim.input || expr.$rtrim, doc) ?? '').trimEnd();
+    if (expr.$substr || expr.$substrBytes) { const [s, start, len] = (expr.$substr || expr.$substrBytes).map(e => this._evalExpr(e, doc)); return String(s ?? '').substring(start, start + len); }
+    if (expr.$substrCP)    { const [s, start, len] = expr.$substrCP.map(e => this._evalExpr(e, doc)); return [...String(s ?? '')].slice(start, start + len).join(''); }
+    if (expr.$strLenBytes) return Buffer.byteLength(String(this._evalExpr(expr.$strLenBytes, doc) ?? ''));
+    if (expr.$strLenCP)    return [...String(this._evalExpr(expr.$strLenCP, doc) ?? '')].length;
+    if (expr.$split)       { const [s, delim] = expr.$split.map(e => this._evalExpr(e, doc)); return String(s ?? '').split(delim); }
+    if (expr.$indexOfBytes || expr.$indexOfCP) { const [s, search] = (expr.$indexOfBytes || expr.$indexOfCP).map(e => this._evalExpr(e, doc)); return String(s ?? '').indexOf(search); }
+    if (expr.$regexFind)   { const { input, regex, options } = expr.$regexFind; const s = this._evalExpr(input, doc); const rgx = new RegExp(regex, options); const m = String(s ?? '').match(rgx); return m ? { match: m[0], idx: m.index, captures: m.slice(1) } : null; }
+    if (expr.$regexFindAll) { const { input, regex, options } = expr.$regexFindAll; const s = String(this._evalExpr(input, doc) ?? ''); const rgx = new RegExp(regex, (options || '') + 'g'); return [...s.matchAll(rgx)].map(m => ({ match: m[0], idx: m.index, captures: m.slice(1) })); }
+    if (expr.$regexMatch)   { const { input, regex, options } = expr.$regexMatch; const s = this._evalExpr(input, doc); return new RegExp(regex, options).test(String(s ?? '')); }
+    if (expr.$replaceOne || expr.$replaceAll) {
+      const { input, find, replacement } = expr.$replaceOne || expr.$replaceAll;
+      const s = String(this._evalExpr(input, doc) ?? '');
+      const f = String(this._evalExpr(find, doc) ?? '');
+      const r = String(this._evalExpr(replacement, doc) ?? '');
+      return expr.$replaceAll ? s.split(f).join(r) : s.replace(f, r);
+    }
+
+    // Dates
+    if (expr.$year)        { const d = new Date(this._evalExpr(expr.$year, doc)); return d.getFullYear(); }
+    if (expr.$month)       { const d = new Date(this._evalExpr(expr.$month, doc)); return d.getMonth() + 1; }
+    if (expr.$dayOfMonth)  { const d = new Date(this._evalExpr(expr.$dayOfMonth, doc)); return d.getDate(); }
+    if (expr.$dayOfWeek)   { const d = new Date(this._evalExpr(expr.$dayOfWeek, doc)); return d.getDay() + 1; }
+    if (expr.$dayOfYear)   { const d = new Date(this._evalExpr(expr.$dayOfYear, doc)); return Math.ceil((d - new Date(d.getFullYear(), 0, 1)) / 86400000) + 1; }
+    if (expr.$hour)        { const d = new Date(this._evalExpr(expr.$hour, doc)); return d.getHours(); }
+    if (expr.$minute)      { const d = new Date(this._evalExpr(expr.$minute, doc)); return d.getMinutes(); }
+    if (expr.$second)      { const d = new Date(this._evalExpr(expr.$second, doc)); return d.getSeconds(); }
+    if (expr.$millisecond) { const d = new Date(this._evalExpr(expr.$millisecond, doc)); return d.getMilliseconds(); }
+    if (expr.$dateToString) { const { format, date } = expr.$dateToString; const d = new Date(this._evalExpr(date, doc)); return d.toISOString(); }
+    if (expr.$toDate)      return new Date(this._evalExpr(expr.$toDate, doc));
+    if (expr.$dateAdd)     { const { startDate, unit, amount } = expr.$dateAdd; const d = new Date(this._evalExpr(startDate, doc)); const amt = this._evalExpr(amount, doc); if (unit === 'day') d.setDate(d.getDate() + amt); else if (unit === 'hour') d.setHours(d.getHours() + amt); else if (unit === 'minute') d.setMinutes(d.getMinutes() + amt); else if (unit === 'second') d.setSeconds(d.getSeconds() + amt); return d; }
+    if (expr.$dateDiff)    { const { startDate, endDate, unit } = expr.$dateDiff; const start = new Date(this._evalExpr(startDate, doc)); const end = new Date(this._evalExpr(endDate, doc)); const diff = end - start; if (unit === 'day') return Math.floor(diff / 86400000); if (unit === 'hour') return Math.floor(diff / 3600000); if (unit === 'minute') return Math.floor(diff / 60000); return diff; }
+
+    // Comparison
+    if (expr.$eq)  { const [a, b] = expr.$eq.map(e => this._evalExpr(e, doc));  return a === b; }
+    if (expr.$ne)  { const [a, b] = expr.$ne.map(e => this._evalExpr(e, doc));  return a !== b; }
+    if (expr.$gt)  { const [a, b] = expr.$gt.map(e => this._evalExpr(e, doc));  return a > b; }
+    if (expr.$gte) { const [a, b] = expr.$gte.map(e => this._evalExpr(e, doc)); return a >= b; }
+    if (expr.$lt)  { const [a, b] = expr.$lt.map(e => this._evalExpr(e, doc));  return a < b; }
+    if (expr.$lte) { const [a, b] = expr.$lte.map(e => this._evalExpr(e, doc)); return a <= b; }
+    if (expr.$cmp) { const [a, b] = expr.$cmp.map(e => this._evalExpr(e, doc)); return a > b ? 1 : a < b ? -1 : 0; }
+
+    // Logical
+    if (expr.$and)  return expr.$and.every(e => this._evalExpr(e, doc));
+    if (expr.$or)   return expr.$or.some(e => this._evalExpr(e, doc));
+    if (expr.$not)  { const v = Array.isArray(expr.$not) ? expr.$not[0] : expr.$not; return !this._evalExpr(v, doc); }
+    if (expr.$cond) {
+      const cond = expr.$cond;
+      const test = Array.isArray(cond) ? this._evalExpr(cond[0], doc) : this._evalExpr(cond.if, doc);
+      return test ? this._evalExpr(Array.isArray(cond) ? cond[1] : cond.then, doc) : this._evalExpr(Array.isArray(cond) ? cond[2] : cond.else, doc);
+    }
+    if (expr.$switch) {
+      for (const branch of expr.$switch.branches) {
+        if (this._evalExpr(branch.case, doc)) return this._evalExpr(branch.then, doc);
+      }
+      return expr.$switch.default !== undefined ? this._evalExpr(expr.$switch.default, doc) : null;
+    }
+    if (expr.$ifNull) { for (const e of expr.$ifNull) { const v = this._evalExpr(e, doc); if (v !== null && v !== undefined) return v; } return null; }
+
+    // Type conversion
+    if (expr.$toString)  return String(this._evalExpr(expr.$toString, doc) ?? '');
+    if (expr.$toInt)     return parseInt(this._evalExpr(expr.$toInt, doc));
+    if (expr.$toLong)    return parseInt(this._evalExpr(expr.$toLong, doc));
+    if (expr.$toDouble)  return parseFloat(this._evalExpr(expr.$toDouble, doc));
+    if (expr.$toBool)    return Boolean(this._evalExpr(expr.$toBool, doc));
+    if (expr.$toDecimal) return parseFloat(this._evalExpr(expr.$toDecimal, doc));
+    if (expr.$type)      return typeof this._evalExpr(expr.$type, doc);
+    if (expr.$convert)   { try { return this._evalExpr({ [`$to${expr.$convert.to.charAt(0).toUpperCase() + expr.$convert.to.slice(1)}`]: expr.$convert.input }, doc); } catch { return expr.$convert.onError || null; } }
+
+    // Miscellaneous
+    if (expr.$literal)   return expr.$literal;
+    if (expr.$objectToArray) { const obj = this._evalExpr(expr.$objectToArray, doc); return obj ? Object.entries(obj).map(([k, v]) => ({ k, v })) : []; }
+    if (expr.$arrayToObject) { const arr = this._evalExpr(expr.$arrayToObject, doc); if (!Array.isArray(arr)) return {}; return arr.reduce((o, item) => { if (Array.isArray(item)) o[item[0]] = item[1]; else if (item.k !== undefined) o[item.k] = item.v; return o; }, {}); }
+    if (expr.$mergeObjects) { const objs = (Array.isArray(expr.$mergeObjects) ? expr.$mergeObjects : [expr.$mergeObjects]).map(e => this._evalExpr(e, doc)); return Object.assign({}, ...objs.filter(Boolean)); }
+    if (expr.$getField)  { const { field: f, input } = expr.$getField; const obj = input ? this._evalExpr(input, doc) : doc; return obj ? obj[f] : undefined; }
+    if (expr.$setField)  { const { field: f, input, value: v } = expr.$setField; const obj = { ...(this._evalExpr(input, doc) || {}) }; obj[f] = this._evalExpr(v, doc); return obj; }
+    if (expr.$unsetField) { const { field: f, input } = expr.$unsetField; const obj = { ...(this._evalExpr(input, doc) || {}) }; delete obj[f]; return obj; }
+    if (expr.$rand)      return Math.random();
+    if (expr.$sampleRate) return Math.random() < expr.$sampleRate;
+    if (expr.$let)       { const vars = Object.fromEntries(Object.entries(expr.$let.vars).map(([k, v]) => [k, this._evalExpr(v, doc)])); return this._evalExpr(expr.$let.in, { ...doc, ...vars }); }
+
+    return expr;
+  }
+
+  // ─── Utilities ─────────────────────────────────────────────────────────────
+  _groupByPartition(docs, fields) {
     const groups = {};
     for (const doc of docs) {
-      const key = JSON.stringify(partitionFields.map(field => doc[field]));
+      const key = JSON.stringify(fields.map(f => doc[f]));
       if (!groups[key]) groups[key] = [];
       groups[key].push(doc);
     }
     return groups;
   }
 
-  // === Pipeline Execution Methods ===
-  _executePipelineSync(docs, pipeline) {
-    let result = [...docs];
-    for (const stage of pipeline) {
-      // Apply each stage synchronously
-      result = this._applyStageSync(result, stage);
-    }
-    return result;
-  }
-
-  async _applyStageSync(docs, stage) {
-    const operator = Object.keys(stage)[0];
-    const operation = stage[operator];
-
-    switch (operator) {
-      case '$lookup': {
-        const { from, localField, foreignField, as } = operation;
-        const foreignDocs = await this._readCollectionData(from);
-        
-        return docs.map(doc => {
-          const localValue = this._getFieldValue(doc, localField);
-          const matches = foreignDocs.filter(foreignDoc => 
-            String(this._getFieldValue(foreignDoc, foreignField)) === String(localValue)
-          );
-          return {
-            ...doc,
-            [as]: matches
-          };
-        });
-      }
-
-      case '$project': {
-        return docs.map(doc => {
-          const projected = {};
-          for (const [field, spec] of Object.entries(operation)) {
-            if (spec === 1) {
-              projected[field] = doc[field];
-            } else if (typeof spec === 'object') {
-              if (spec.$size) {
-                const array = this._getFieldValue(doc, spec.$size.slice(1));
-                projected[field] = Array.isArray(array) ? array.length : 0;
-              } else if (spec.$sum) {
-                if (typeof spec.$sum === 'string') {
-                  const array = this._getFieldValue(doc, spec.$sum.slice(1));
-                  projected[field] = Array.isArray(array) 
-                    ? array.reduce((sum, item) => sum + (item || 0), 0)
-                    : 0;
-                } else {
-                  projected[field] = spec.$sum;
-                }
-              }
-            }
-          }
-          return projected;
-        });
-      }
-
-      case '$sort': {
-        return [...docs].sort((a, b) => {
-          for (const [field, order] of Object.entries(operation)) {
-            const aVal = this._getFieldValue(a, field) || 0;
-            const bVal = this._getFieldValue(b, field) || 0;
-            if (aVal < bVal) return -order;
-            if (aVal > bVal) return order;
-          }
-          return 0;
-        });
-      }
-  
-      case '$bucket': {
-        const { 
-          groupBy,      // Expression to group by
-          boundaries,   // Bucket boundaries
-          default: defaultBucket,  // Optional bucket for values outside boundaries
-          output = {}   // Optional output fields
-        } = operation;
-  
-        const buckets = {};
-  
-        docs.forEach(doc => {
-          // Evaluate the groupBy expression for the current document
-          const value = this._evaluateExpression(groupBy, doc);
-  
-          // Find the appropriate bucket
-          let bucketIndex = boundaries.findIndex(boundary => value < boundary);
-          
-          if (bucketIndex === -1) {
-            if (defaultBucket !== undefined) {
-              bucketIndex = 'default';
-            } else {
-              // Skip document if no suitable bucket and no default
-              return;
-            }
-          } else {
-            // Use the lower boundary as the bucket key
-            bucketIndex = bucketIndex > 0 ? boundaries[bucketIndex - 1] : 0;
-          }
-  
-          // Initialize bucket if it doesn't exist
-          if (!buckets[bucketIndex]) {
-            buckets[bucketIndex] = { 
-              _id: bucketIndex,
-              count: 0
-            };
-            
-            // Initialize output fields
-            for (const [field, accumulator] of Object.entries(output)) {
-              buckets[bucketIndex][field] = this._initializeAccumulator(accumulator);
-            }
-          }
-  
-          // Update count
-          buckets[bucketIndex].count++;
-  
-          // Update output fields
-          for (const [field, accumulator] of Object.entries(output)) {
-            this._updateAccumulator(
-              buckets[bucketIndex], 
-              field, 
-              accumulator, 
-              doc
-            );
-          }
-        });
-  
-        // Convert buckets object to array and handle averages
-        return Object.values(buckets).map(bucket => {
-          // Convert average accumulator to final value
-          for (const [field, value] of Object.entries(bucket)) {
-            if (typeof value === 'object' && value.sum !== undefined) {
-              bucket[field] = value.value || (value.sum / value.count);
-            }
-          }
-          return bucket;
-        });
-      }
-  
-      case '$count': {
-        return [{ [operation]: docs.length }];
-      }
-  
-      case '$out': {
-        // Determine the target collection path
-        const targetCollectionPath = path.join(
-          this.connection.dbPath, 
-          `${operation}.json`
-        );
-      
-        // Write the current docs to the target collection
-        await writeJSON(targetCollectionPath, docs);
-      
-        // Optionally, you can return the docs or an empty array
-        return docs;
-      }
-  
-      case '$merge': {
-        const { into, on, whenMatched, whenNotMatched } = operation;
-        
-        // Simulate merge logic
-        const existingCollection = this.model._getCollection(into) || [];
-        
-        const mergedDocs = docs.map(doc => {
-          // Find matching documents based on 'on' field
-          const matchIndex = existingCollection.findIndex(
-            existing => existing[on] === doc[on]
-          );
-  
-          if (matchIndex !== -1) {
-            // When matched
-            switch (whenMatched) {
-              case 'replace':
-                existingCollection[matchIndex] = doc;
-                break;
-              case 'merge':
-                existingCollection[matchIndex] = { 
-                  ...existingCollection[matchIndex], 
-                  ...doc 
-                };
-                break;
-              case 'keepExisting':
-              default:
-                break;
-            }
-          } else {
-            // When not matched
-            switch (whenNotMatched) {
-              case 'insert':
-                existingCollection.push(doc);
-                break;
-              case 'discard':
-              default:
-                break;
-            }
-          }
-  
-          return doc;
-        });
-  
-        return mergedDocs;
-      }
-  
-      case '$replaceRoot': {
-        const { newRoot } = operation;
-        return docs.map(doc => {
-          // Evaluate the new root expression
-          return this._evaluateExpression(newRoot, doc);
-        });
-      }
-  
-      case '$set': {
-        return docs.map(doc => {
-          const updatedDoc = { ...doc };
-          for (const [field, value] of Object.entries(operation)) {
-            updatedDoc[field] = this._evaluateExpression(value, doc);
-          }
-          return updatedDoc;
-        });
-      }
-  
-      case '$unset': {
-        return docs.map(doc => {
-          const updatedDoc = { ...doc };
-          for (const field of operation) {
-            delete updatedDoc[field];
-          }
-          return updatedDoc;
-        });
-      }
-  
-      case '$bucketAuto': {
-        const { groupBy, buckets, output = {} } = operation;
-        const values = docs.map(doc => this._evaluateExpression(groupBy, doc)).sort((a, b) => a - b);
-        const bucketSize = Math.ceil(values.length / buckets);
-        
-        return Array.from({ length: buckets }, (_, i) => {
-          const start = i * bucketSize;
-          const end = (i + 1) * bucketSize;
-          
-          const bucketDocs = docs.filter((doc, index) => 
-            index >= start && index < Math.min(end, docs.length)
-          );
-          
-          return {
-            _id: { 
-              min: values[start], 
-              max: values[Math.min(end - 1, values.length - 1)] 
-            },
-            count: bucketDocs.length,
-            ...this._computeOutputFields(bucketDocs, output)
-          };
-        });
-      }
-  
-      case '$fill': {
-        const { sortBy, output } = operation;
-        const sortedDocs = sortBy ? this._sort(docs, sortBy) : [...docs];
-        
-        return sortedDocs.map(doc => {
-          const filledDoc = { ...doc };
-          
-          for (const [field, method] of Object.entries(output)) {
-            if (filledDoc[field] === null || filledDoc[field] === undefined) {
-              switch (method) {
-                case 'linear':
-                  const docIndex = sortedDocs.indexOf(doc);
-                  const prevDoc = sortedDocs[docIndex - 1];
-                  const nextDoc = sortedDocs[docIndex + 1];
-                  if (prevDoc && nextDoc) {
-                    filledDoc[field] = (prevDoc[field] + nextDoc[field]) / 2;
-                  }
-                  break;
-                case 'locf':
-                  const lastValidDoc = sortedDocs.findLast(d => 
-                    d[field] !== null && d[field] !== undefined
-                  );
-                  if (lastValidDoc) {
-                    filledDoc[field] = lastValidDoc[field];
-                  }
-                  break;
-              }
-            }
-          }
-          
-          return filledDoc;
-        });
-      }
-  
-      case '$documents': {
-        return Array.isArray(operation) ? operation : [operation];
-      }
-  
-      case '$sample': {
-        const { size } = operation;
-        return docs
-          .sort(() => 0.5 - Math.random())
-          .slice(0, size);
-      }
-  
-      case '$setWindowFields': {
-        const { partitionBy, sortBy, output } = operation;
-        
-        const partitionedDocs = partitionBy 
-          ? this._partitionDocuments(docs, partitionBy) 
-          : [docs];
-        
-        return partitionedDocs.flatMap(partition => 
-          this._computeWindowFields(partition, sortBy, output)
-        );
-      }
-  
-      default:
-        return docs;
-    }
-  }
-
-  // === Data Access Methods ===
   async _readCollectionData(collectionName) {
-    try {
-      const collection = await this.model._getCollection(collectionName);
-      return collection || [];
-    } catch (error) {
-      console.error(`Error reading collection ${collectionName}:`, error);
-      return [];
-    }
+    try { return this.model._getCollection(collectionName) || []; }
+    catch { return []; }
   }
 }
 

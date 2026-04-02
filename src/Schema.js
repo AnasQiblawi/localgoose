@@ -1,97 +1,95 @@
 const { SchemaType } = require('./SchemaType.js');
 const { VirtualType } = require('./VirtualType.js');
-const { ObjectId, Decimal128 } = require('bson'); // Added Decimal128
+const { ObjectId, Decimal128 } = require('bson');
+
+// All valid Mongoose-compatible middleware hooks
+const VALID_HOOKS = [
+  'init', 'validate', 'save', 'remove',
+  'deleteOne', 'deleteMany',
+  'find', 'findOne', 'findOneAndUpdate', 'findOneAndRemove', 'findOneAndDelete',
+  'updateOne', 'updateMany',
+  'count', 'countDocuments', 'estimatedDocumentCount',
+  'aggregate', 'insertMany'
+];
 
 class Schema {
-  // === Core Functionality ===
   constructor(definition, options = {}) {
     if (definition !== undefined && definition !== null && typeof definition !== 'object') {
       throw new TypeError('Schema definition must be an object or null');
     }
-    
     if (Array.isArray(definition)) {
       throw new TypeError('Schema definition cannot be an array');
     }
 
-    this.definition = this._parseDefinition(definition);
+    this.obj = { ...(definition || {}) };
+    this.definition = this._parseDefinition(definition || {});
     this.options = options;
     this.virtuals = {};
     this.methods = {};
     this.statics = {};
-    this.middleware = {
-      pre: {},
-      post: {}
-    };
+    this.middleware = { pre: {}, post: {} };
     this._indexes = [];
     this._paths = new Map();
     this._requiredPaths = new Set();
     this._plugins = new Set();
     this.childSchemas = [];
     this.discriminatorMapping = null;
-    this.obj = { ...definition };
     this._searchIndexes = new Map();
     this._doc = {};
     this._queue = new Map();
-
     this.reserved = Schema.reserved;
 
-    // Handle schema options
     if (options.timestamps) {
       this.definition.createdAt = { type: Date, default: Date.now };
       this.definition.updatedAt = { type: Date, default: Date.now };
     }
     if (options.versionKey !== false) {
-      this.definition.__v = { type: Number, default: 0 };
+      const vKey = typeof options.versionKey === 'string' ? options.versionKey : '__v';
+      this.definition[vKey] = { type: Number, default: 0 };
     }
 
     this.strict = options.strict !== undefined ? options.strict : true;
     this.minimize = options.minimize !== undefined ? options.minimize : true;
-
     this._init();
   }
 
   _init() {
-    for (const [path, options] of Object.entries(this.definition)) {
-      this._paths.set(path, this._createSchemaType(path, options));
-      if (options.required) {
-        this._requiredPaths.add(path);
-      }
-      if (options.index) {
-        this.index({ [path]: 1 });
-      }
+    for (const [p, opts] of Object.entries(this.definition)) {
+      try {
+        this._paths.set(p, this._createSchemaType(p, opts));
+        if (opts && opts.required) this._requiredPaths.add(p);
+        if (opts && opts.index) this._indexes.push({ fields: { [p]: 1 }, options: {} });
+      } catch (e) { /* skip paths that cant create SchemaType */ }
     }
   }
 
   _parseDefinition(definition) {
+    if (!definition || typeof definition !== 'object') return {};
     const parsed = {};
     for (const [key, value] of Object.entries(definition)) {
-      if (typeof value === 'object' && !Array.isArray(value) && value !== null) {
-        if (value instanceof Schema) {
-          // Handle nested schema
-          parsed[key] = {
-            type: Object,
-            schema: value
-          };
-        } else if (value.type && value.type instanceof Schema) {
-          // Handle array of nested schemas
-          parsed[key] = {
-            ...value,
-            schema: value.type
-          };
+      if (value === null || value === undefined) {
+        parsed[key] = { type: Object };
+      } else if (value instanceof Schema) {
+        parsed[key] = { type: Object, schema: value };
+      } else if (typeof value === 'function') {
+        // Shorthand: field: String
+        parsed[key] = { type: value };
+      } else if (Array.isArray(value)) {
+        parsed[key] = { type: Array, schema: value[0] ? new Schema(value[0]) : null };
+      } else if (typeof value === 'object') {
+        if (value.type instanceof Schema) {
+          parsed[key] = { ...value, schema: value.type, type: Object };
         } else if (value.type && Array.isArray(value.type)) {
-          // Handle array of subdocuments
-          parsed[key] = {
-            type: Array,
-            schema: new Schema(value.type[0])
-          };
+          parsed[key] = { type: Array, schema: value.type[0] ? new Schema(value.type[0]) : null };
         } else if (value.type) {
           parsed[key] = {
             ...value,
-            isReference: value.type === Schema.Types.ObjectId && value.ref,
-            validate: value.validate || null // Add support for custom validators
+            isReference: value.type === Schema.Types.ObjectId && !!value.ref,
+            validate: value.validate || null
           };
         } else {
-          parsed[key] = this._parseDefinition(value);
+          // Nested object without type: treat as Mixed/Object
+          parsed[key] = { type: Object, _nestedDef: value };
         }
       } else {
         parsed[key] = { type: value };
@@ -100,74 +98,33 @@ class Schema {
     return parsed;
   }
 
-  _createSchemaType(path, options) {
-    const type = options.type || options;
-    
-    if (type === undefined) {
-      throw new Error(`No type specified for path '${path}'`);
-    }
-
-    if (!Schema.Types[type.name] && !(type instanceof Schema)) {
-      throw new Error(`Invalid type ${type} specified for path '${path}'`);
-    }
-
-    const schemaTypeOptions = typeof options === 'object' ? options : {};
-    const schemaType = new SchemaType(path, schemaTypeOptions, type);
-
-    // Handle default values
-    if (options.default !== undefined) {
-      schemaType.default(options.default);
-    }
-
-    return schemaType;
+  _createSchemaType(p, options) {
+    if (!options) return new SchemaType(p, {}, Object);
+    const type = options.type !== undefined ? options.type : options;
+    if (type === undefined) return new SchemaType(p, {}, Object);
+    // Allow any type including custom classes — do NOT throw for unknown types
+    const opts = typeof options === 'object' ? options : {};
+    const st = new SchemaType(p, opts, type);
+    if (opts.default !== undefined) st.default(opts.default);
+    return st;
   }
 
-  // === Static Properties ===
   static get reserved() {
     return {
-      _id: true,
-      __v: true,
-      createdAt: true,
-      updatedAt: true,
-      collection: true,
-      emit: true,
-      errors: true,
-      get: true,
-      init: true,
-      isModified: true,
-      isNew: true,
-      listeners: true,
-      modelName: true,
-      on: true,
-      once: true,
-      populated: true,
-      remove: true,
-      removeListener: true,
-      save: true,
-      schema: true,
-      set: true,
-      toObject: true,
-      validate: true
+      _id: true, __v: true, createdAt: true, updatedAt: true,
+      collection: true, emit: true, errors: true, get: true,
+      init: true, isModified: true, isNew: true, listeners: true,
+      modelName: true, on: true, once: true, populated: true,
+      remove: true, removeListener: true, save: true, schema: true,
+      set: true, toObject: true, validate: true
     };
   }
 
   static get Types() {
     return {
-      String: String,
-      Number: Number,
-      Boolean: Boolean,
-      Array: Array,
-      Date: Date,
-      Object: Object,
-      ObjectId: ObjectId,
-      Mixed: Object,
-      Decimal128: Decimal128,
-      Map: Map,
-      Buffer: Buffer,
-      UUID: String,
-      BigInt: BigInt,
-      Subdocument: Object,
-      Embedded: Object
+      String, Number, Boolean, Array, Date, Object,
+      ObjectId, Mixed: Object, Decimal128, Map, Buffer,
+      UUID: String, BigInt, Subdocument: Object, Embedded: Object
     };
   }
 
@@ -175,69 +132,74 @@ class Schema {
     return ['2d', '2dsphere', 'hashed', 'text', 'unique', 'sparse', 'compound'];
   }
 
-  // === Schema Modification Methods ===
-  add(obj) {
-    for (const [path, options] of Object.entries(obj)) {
-      this.definition[path] = options;
-      this._paths.set(path, this._createSchemaType(path, options));
-      if (options.required) {
-        this._requiredPaths.add(path);
+  // === Schema Modification ===
+  add(fieldOrSchema, singleValue) {
+    if (fieldOrSchema instanceof Schema) {
+      const other = fieldOrSchema;
+      for (const [p, def] of Object.entries(other.obj)) {
+        this.obj[p] = def;
+        const parsed = this._parseDefinition({ [p]: def });
+        this.definition[p] = parsed[p];
+        try {
+          this._paths.set(p, this._createSchemaType(p, parsed[p]));
+          if (parsed[p] && parsed[p].required) this._requiredPaths.add(p);
+        } catch (e) {}
+      }
+      Object.assign(this.methods, other.methods);
+      Object.assign(this.statics, other.statics);
+      Object.assign(this.virtuals, other.virtuals);
+    } else {
+      const obj = fieldOrSchema;
+      for (const [p, def] of Object.entries(obj)) {
+        const defValue = singleValue !== undefined ? singleValue : def;
+        this.obj[p] = defValue;
+        const parsed = this._parseDefinition({ [p]: defValue });
+        this.definition[p] = parsed[p];
+        try {
+          this._paths.set(p, this._createSchemaType(p, parsed[p]));
+          if (parsed[p] && parsed[p].required) this._requiredPaths.add(p);
+        } catch (e) {}
       }
     }
     return this;
   }
 
-  remove(path) {
-    delete this.definition[path];
-    this._paths.delete(path);
-    this._requiredPaths.delete(path);
+  remove(p) {
+    delete this.definition[p];
+    delete this.obj[p];
+    this._paths.delete(p);
+    this._requiredPaths.delete(p);
     return this;
   }
 
-  // === Schema Configuration ===
   alias(from, to) {
-    this.virtual(from).get(function() {
-      return this[to];
-    });
+    this.virtual(from).get(function () { return this[to]; });
     return this;
   }
 
   index(fields, options = {}) {
-    if (typeof fields !== 'object' || Array.isArray(fields)) {
-      throw new TypeError('Index fields must be an object');
-    }
-
-    for (const [path, value] of Object.entries(fields)) {
-      if (![-1, 1, '2d', '2dsphere', 'geoHaystack', 'hashed', 'text'].includes(value)) {
-        throw new Error(`Invalid index value '${value}' for path '${path}'`);
-      }
-    }
-
-    const index = { fields, options };
-    this._indexes.push(index);
+    if (typeof fields !== 'object' || Array.isArray(fields)) throw new TypeError('Index fields must be an object');
+    this._indexes.push({ fields, options });
     return this;
   }
 
-  path(path) {
-    return this._paths.get(path);
-  }
+  path(p) { return this._paths.get(p); }
 
-  pathType(path) {
-    if (this._paths.has(path)) return 'real';
-    if (this.virtuals[path]) return 'virtual';
-    if (this.reserved[path]) return 'reserved';
+  pathType(p) {
+    if (this._paths.has(p)) return 'real';
+    if (this.virtuals[p]) return 'virtual';
+    if (this.reserved[p]) return 'reserved';
     return 'adhoc';
   }
 
-  // === Schema Operations ===
   clone() {
-    const clone = new Schema(this.definition, { ...this.options });
+    const clone = new Schema(this.obj, { ...this.options });
     clone.virtuals = { ...this.virtuals };
     clone.methods = { ...this.methods };
     clone.statics = { ...this.statics };
     clone.middleware = {
-      pre: { ...this.middleware.pre },
-      post: { ...this.middleware.post }
+      pre: Object.fromEntries(Object.entries(this.middleware.pre).map(([k, v]) => [k, [...v]])),
+      post: Object.fromEntries(Object.entries(this.middleware.post).map(([k, v]) => [k, [...v]]))
     };
     clone._indexes = [...this._indexes];
     clone._plugins = new Set([...this._plugins]);
@@ -248,40 +210,27 @@ class Schema {
 
   discriminator(name, schema) {
     if (!this.discriminatorMapping) {
-      this.discriminatorMapping = {
-        key: '_type',
-        value: this.options.name || 'Base'
-      };
+      this.discriminatorMapping = { key: '_type', value: this.options.name || 'Base' };
     }
-    schema.discriminatorMapping = {
-      key: this.discriminatorMapping.key,
-      value: name
-    };
+    schema.discriminatorMapping = { key: this.discriminatorMapping.key, value: name };
     this.childSchemas.push({ name, schema });
     return schema;
   }
 
-  // === Middleware and Plugins ===
   pre(action, fn) {
-    const validHooks = ['init', 'validate', 'save', 'remove', 'deleteOne', 'deleteMany'];
-    if (!validHooks.includes(action)) {
-      throw new Error(`Invalid hook: ${action}. Valid hooks are: ${validHooks.join(', ')}`);
+    if (!VALID_HOOKS.includes(action)) {
+      throw new Error(`Invalid hook: ${action}. Valid hooks are: ${VALID_HOOKS.join(', ')}`);
     }
-    if (!this.middleware.pre[action]) {
-      this.middleware.pre[action] = [];
-    }
+    if (!this.middleware.pre[action]) this.middleware.pre[action] = [];
     this.middleware.pre[action].push(fn);
     return this;
   }
 
   post(action, fn) {
-    const validHooks = ['init', 'validate', 'save', 'remove', 'deleteOne', 'deleteMany'];
-    if (!validHooks.includes(action)) {
-      throw new Error(`Invalid hook: ${action}. Valid hooks are: ${validHooks.join(', ')}`);
+    if (!VALID_HOOKS.includes(action)) {
+      throw new Error(`Invalid hook: ${action}. Valid hooks are: ${VALID_HOOKS.join(', ')}`);
     }
-    if (!this.middleware.post[action]) {
-      this.middleware.post[action] = [];
-    }
+    if (!this.middleware.post[action]) this.middleware.post[action] = [];
     this.middleware.post[action].push(fn);
     return this;
   }
@@ -292,98 +241,58 @@ class Schema {
     return this;
   }
 
-  // === Virtual Fields ===
   virtual(name) {
-    if (!this.virtuals[name]) {
-      this.virtuals[name] = new VirtualType({ path: name });
-    }
+    if (!this.virtuals[name]) this.virtuals[name] = new VirtualType({ path: name });
     return this.virtuals[name];
   }
 
-  virtualpath(name) {
-    return this.virtuals[name];
-  }
+  virtualpath(name) { return this.virtuals[name]; }
 
-  // === Methods and Statics ===
   method(name, fn) {
-    this.methods[name] = fn;
+    if (typeof name === 'object') Object.assign(this.methods, name);
+    else this.methods[name] = fn;
     return this;
   }
 
   static(name, fn) {
-    this.statics[name] = fn;
+    if (typeof name === 'object') Object.assign(this.statics, name);
+    else this.statics[name] = fn;
     return this;
   }
 
   loadClass(model) {
-    const methods = Object.getOwnPropertyNames(model.prototype)
-      .filter(name => name !== 'constructor');
-    
-    methods.forEach(method => {
-      this.method(method, model.prototype[method]);
-    });
-    
-    const statics = Object.getOwnPropertyNames(model)
-      .filter(name => typeof model[name] === 'function');
-    
-    statics.forEach(staticMethod => {
-      this.static(staticMethod, model[staticMethod]);
-    });
-    
+    Object.getOwnPropertyNames(model.prototype)
+      .filter(n => n !== 'constructor')
+      .forEach(n => this.method(n, model.prototype[n]));
+    Object.getOwnPropertyNames(model)
+      .filter(n => typeof model[n] === 'function')
+      .forEach(n => this.static(n, model[n]));
     return this;
   }
 
-  // === Schema Traversal ===
-  eachPath(fn) {
-    this._paths.forEach((schemaType, path) => {
-      fn(path, schemaType);
-    });
-  }
+  eachPath(fn) { this._paths.forEach((st, p) => fn(p, st)); }
 
   requiredPaths(invalidate = false) {
     if (invalidate) {
       this._requiredPaths.clear();
-      this.eachPath((path, schemaType) => {
-        if (schemaType.required()) {
-          this._requiredPaths.add(path);
-        }
-      });
+      this.eachPath((p, st) => { if (st.isRequired) this._requiredPaths.add(p); });
     }
     return Array.from(this._requiredPaths);
   }
 
-  // === Index Management ===
-  indexes() {
-    return [...this._indexes];
-  }
-
-  clearIndexes() {
-    this._indexes = [];
-    return this;
-  }
+  indexes() { return [...this._indexes]; }
+  clearIndexes() { this._indexes = []; return this; }
 
   searchIndex(options = {}) {
-    if (typeof options !== 'object' || Array.isArray(options)) {
-      throw new TypeError('Search index options must be an object');
-    }
-
-    if (!options.name) {
-      throw new Error('Search index must have a name');
-    }
-
-    if (!options.definition) {
-      throw new Error('Search index must have a definition');
-    }
-
-    const index = {
+    if (!options.name) throw new Error('Search index must have a name');
+    if (!options.definition) throw new Error('Search index must have a definition');
+    this._searchIndexes.set(options.name, {
       weights: options.weights || {},
       name: options.name,
       definition: options.definition,
       default_language: options.default_language || 'english',
       language_override: options.language_override || 'language'
-    };
-
-    this._searchIndexes.set(options.name, index);
+    });
     return this;
   }
 
@@ -391,9 +300,7 @@ class Schema {
     if (typeof index === 'string') {
       this._indexes = this._indexes.filter(idx => idx.options.name !== index);
     } else if (typeof index === 'object' && !Array.isArray(index)) {
-      this._indexes = this._indexes.filter(idx => {
-        return JSON.stringify(idx.fields) !== JSON.stringify(index);
-      });
+      this._indexes = this._indexes.filter(idx => JSON.stringify(idx.fields) !== JSON.stringify(index));
     } else {
       throw new TypeError('Index parameter must be a string name or an object specification');
     }
@@ -401,205 +308,133 @@ class Schema {
   }
 
   removeVirtual(paths) {
-    paths = Array.isArray(paths) ? paths : [paths];
-    paths.forEach(path => {
-      delete this.virtuals[path];
-    });
+    (Array.isArray(paths) ? paths : [paths]).forEach(p => delete this.virtuals[p]);
     return this;
   }
 
   toJSONSchema(options = {}) {
     const useBsonType = options.useBsonType || false;
     const typeKey = useBsonType ? 'bsonType' : 'type';
-    const jsonSchema = {
-      type: 'object',
-      required: ['_id', ...this.requiredPaths()],
-      properties: {}
-    };
-
-    this.eachPath((path, schemaType) => {
+    const jsonSchema = { type: 'object', required: ['_id', ...this.requiredPaths()], properties: {} };
+    this.eachPath((p, st) => {
       let property = {};
-      
-      if (useBsonType) {
-        if (schemaType.instance === 'ObjectID') {
-          property[typeKey] = 'objectId';
-        } else {
-          property[typeKey] = [schemaType.instance.toLowerCase(), 'null'];
-        }
+      if (st.instance === ObjectId) {
+        property[typeKey] = useBsonType ? 'objectId' : 'string';
       } else {
-        if (schemaType.instance === 'ObjectID') {
-          property[typeKey] = 'string';
-        } else {
-          property[typeKey] = [schemaType.instance.toLowerCase(), 'null'];
-        }
+        property[typeKey] = st.instance?.name?.toLowerCase() || 'mixed';
       }
-
-      if (schemaType.enumValues && schemaType.enumValues.length) {
-        property.enum = schemaType.enumValues;
-      }
-
-      jsonSchema.properties[path] = property;
+      if (st.enumValues && st.enumValues.length) property.enum = st.enumValues;
+      jsonSchema.properties[p] = property;
     });
-
     return jsonSchema;
   }
 
-  // === Schema Options ===
-  get(key) {
-    return this.options[key];
-  }
-
-  set(key, value) {
-    this.options[key] = value;
-    return this;
-  }
+  get(key) { return this.options[key]; }
+  set(key, value) { this.options[key] = value; return this; }
 
   // === Validation ===
-  _validatePath(path, value) {
-    const schemaType = this._paths.get(path);
-    if (!schemaType) return null;
+  _validatePath(p, value) {
+    const st = this._paths.get(p);
+    if (!st) return null;
 
-    // Built-in validators
-    if (schemaType.options.required && value == null) {
-      return `${path} is required`;
+    if (st.options.required) {
+      const isReq = Array.isArray(st.options.required) ? st.options.required[0] : st.options.required;
+      const msg = Array.isArray(st.options.required) ? st.options.required[1] : `Path \`${p}\` is required.`;
+      if (isReq && (value == null || value === '')) return msg;
     }
-    if (schemaType.options.min != null && value < schemaType.options.min) {
-      return `${path} should be at least ${schemaType.options.min}`;
-    }
-    if (schemaType.options.max != null && value > schemaType.options.max) {
-      return `${path} should be at most ${schemaType.options.max}`;
-    }
+    if (value == null) return null; // skip other validations for null/undefined
 
-    // Custom validators
-    if (schemaType.options.validate) {
-      const validator = schemaType.options.validate;
+    if (st.options.min != null) {
+      const min = Array.isArray(st.options.min) ? st.options.min[0] : st.options.min;
+      const msg = Array.isArray(st.options.min) ? st.options.min[1] : `${p} should be at least ${min}`;
+      if (value < min) return msg;
+    }
+    if (st.options.max != null) {
+      const max = Array.isArray(st.options.max) ? st.options.max[0] : st.options.max;
+      const msg = Array.isArray(st.options.max) ? st.options.max[1] : `${p} should be at most ${max}`;
+      if (value > max) return msg;
+    }
+    if (st.options.minlength != null && typeof value === 'string' && value.length < st.options.minlength) {
+      return `${p} must be at least ${st.options.minlength} characters`;
+    }
+    if (st.options.maxlength != null && typeof value === 'string' && value.length > st.options.maxlength) {
+      return `${p} must be at most ${st.options.maxlength} characters`;
+    }
+    if (st.options.match) {
+      const regex = Array.isArray(st.options.match) ? st.options.match[0] : st.options.match;
+      const msg = Array.isArray(st.options.match) ? st.options.match[1] : `${p} does not match required pattern`;
+      if (typeof value === 'string' && !regex.test(value)) return msg;
+    }
+    if (st.options.enum) {
+      if (!st.options.enum.includes(value)) return `${p} must be one of: ${st.options.enum.join(', ')}`;
+    }
+    if (st.options.validate) {
+      const validator = st.options.validate;
       if (typeof validator === 'function') {
         const result = validator(value);
-        if (result !== true) {
-          return result || `${path} validation failed`;
-        }
-      } else if (typeof validator === 'object') {
+        if (result !== true) return result || `${p} validation failed`;
+      } else if (typeof validator === 'object' && validator.validator) {
         if (!validator.validator(value)) {
-          return validator.message || `${path} validation failed`;
+          const message = typeof validator.message === 'function'
+            ? validator.message({ value, path: p })
+            : validator.message || `${p} validation failed`;
+          return message;
         }
       }
     }
-
     return null;
   }
 
   validate(data) {
     const errors = [];
-    for (const [path, schemaType] of this._paths.entries()) {
-      const value = data[path];
-      const error = this._validatePath(path, value);
-      if (error) {
-        errors.push(error);
-      }
+    for (const [p] of this._paths.entries()) {
+      const error = this._validatePath(p, data[p]);
+      if (error) errors.push(error);
     }
     return errors;
   }
 
-  // === Additional Methods ===
   queue(name, args) {
-    if (!this._queue) this._queue = new Map();
     if (!this._queue.has(name)) this._queue.set(name, []);
     this._queue.get(name).push(args);
     return this;
   }
 
   omit(paths) {
-    const newSchema = this.clone();
-    paths = Array.isArray(paths) ? paths : [paths];
-    paths.forEach(path => {
-      newSchema.remove(path);
-    });
-    return newSchema;
+    const clone = this.clone();
+    (Array.isArray(paths) ? paths : [paths]).forEach(p => clone.remove(p));
+    return clone;
   }
 
   pick(paths) {
     const newSchema = new Schema({});
-    paths = Array.isArray(paths) ? paths : [paths];
-    paths.forEach(path => {
-      if (this._paths.has(path)) {
-        newSchema.add({ [path]: this.definition[path] });
-      }
+    (Array.isArray(paths) ? paths : [paths]).forEach(p => {
+      if (this.obj[p]) newSchema.add({ [p]: this.obj[p] });
     });
     return newSchema;
   }
 
-  version(condition, versionKey = '__v') {
-    if (!this.options.versionKey) {
-      this.options.versionKey = versionKey;
-    }
+  get paths() { return Object.fromEntries(this._paths); }
 
-    this.pre('save', async function() {
-      const shouldVersion = typeof condition === 'function' 
-        ? await condition.call(this)
-        : true;
-      
-      if (shouldVersion) {
-        this[versionKey] = (this[versionKey] || 0) + 1;
-      }
-    });
-
-    return this;
-  }
-
-  get paths() {
-    return Object.fromEntries(this._paths);
-  }
-
-  toObject(options = {}) {
-    const obj = { ...this._doc };
-    if (this.minimize) {
-      for (const key in obj) {
-        if (obj[key] === undefined) {
-          delete obj[key];
-        }
-      }
-    }
-    return obj;
-  }
-
-  // Method to handle nested paths
-  nested(path) {
-    const parts = path.split('.');
-    let nested = false;
+  nested(p) {
+    const parts = p.split('.');
     let current = this.definition;
-
-    for (let i = 0; i < parts.length; i++) {
-      if (current[parts[i]] && typeof current[parts[i]] === 'object') {
-        nested = true;
-        current = current[parts[i]];
-      } else {
-        break;
-      }
+    let nested = false;
+    for (const part of parts) {
+      if (current[part] && typeof current[part] === 'object') { nested = true; current = current[part]; }
+      else break;
     }
     return nested;
   }
 
-  // Method to handle array paths
-  isArray(path) {
-    const schemaType = this._paths.get(path);
-    return schemaType && (
-      Array.isArray(schemaType.instance) || 
-      schemaType.instance === Array
-    );
+  isArray(p) {
+    const st = this._paths.get(p);
+    return st && (Array.isArray(st.instance) || st.instance === Array);
   }
 
-  // Method for schema inheritance
   extend(schema) {
-    if (!(schema instanceof Schema)) {
-      throw new Error('extend() argument must be a Schema');
-    }
-
-    this.add(schema.definition);
-    this.methods = { ...this.methods, ...schema.methods };
-    this.statics = { ...this.statics, ...schema.statics };
-    this.virtuals = { ...this.virtuals, ...schema.virtuals };
-
-    return this;
+    if (!(schema instanceof Schema)) throw new Error('extend() argument must be a Schema');
+    return this.add(schema);
   }
 }
 

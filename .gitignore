@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Database files (local data directories)
+mydb/
+test_db/
+mydb_test/
+mydb_test2/
+*_backup_*.json
+
+# Test artifacts
+test_fixes.js
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.*
