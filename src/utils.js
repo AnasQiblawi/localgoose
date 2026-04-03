@@ -1,10 +1,17 @@
 const fs = require('fs-extra');
 const path = require('path');
 const { ObjectId } = require('bson');
+const { LRUCache } = require('lru-cache');
+const writeFileAtomic = require('write-file-atomic');
 
 // === File Operations ===
 const fileLocks = new Map();
-const fileCache = new Map(); // path -> cached parsed data
+const fileCache = new LRUCache({
+  max: 500,
+  // 1 hour TTL
+  ttl: 1000 * 60 * 60,
+  updateAgeOnGet: true
+});
 const flushTimers = new Map();
 const pendingFlushes = new Map();
 
@@ -29,6 +36,7 @@ function _deepClone(obj) {
 }
 
 function clearCache(dirPath) {
+  // Selectively clear cache entries starting with dirPath
   for (const key of fileCache.keys()) {
     if (key.startsWith(dirPath)) {
       fileCache.delete(key);
@@ -96,10 +104,7 @@ async function _writeJSONImpl(filePath, data, options = {}) {
   const dirPath = path.dirname(filePath);
   if (dirPath) await fs.mkdir(dirPath, { recursive: true });
   
-  // Use a temporary file and rename for atomic writes
-  const tempPath = `${filePath}.tmp.${Date.now()}`;
-  await fs.writeFile(tempPath, jsonString, 'utf8');
-  await fs.rename(tempPath, filePath);
+  await writeFileAtomic(filePath, jsonString, 'utf8');
 }
 
 function _scheduleFlush(filePath, data, options) {
