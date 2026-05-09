@@ -1,5 +1,6 @@
-const { readJSON, writeJSON, getNestedValue } = require('./utils.js');
+const { readJSON, writeJSON, getNestedValue, extractCoordinates } = require('./utils.js');
 const path = require('path');
+const geolib = require('geolib');
 
 // All stages supported by exec()
 const VALID_STAGES = [
@@ -33,11 +34,13 @@ class Aggregate {
   pipeline() { return [...this._pipeline]; }
 
   async exec() {
-    // Run pre-aggregate hooks
-    for (const fn of (this._preHooks || [])) await fn.call(this);
-    // Also run schema-registered hooks
+    // Run schema-registered pre-aggregate hooks (the definitive source)
     const schemaHooks = this.model.schema.middleware.pre.aggregate || [];
     for (const fn of schemaHooks) await fn.call(this);
+    // Run any hooks added directly to this Aggregate instance (not already in schema)
+    for (const fn of (this._preHooks || [])) {
+      if (!schemaHooks.includes(fn)) await fn.call(this);
+    }
 
     if (!this.model._find) throw new Error('_find method is not implemented in the model');
     let docs = await this.model._find();
@@ -119,7 +122,13 @@ class Aggregate {
           docs = await this._merge(docs, operation);
           break;
         case '$geoNear':
-          // Not applicable for file storage; pass through
+          docs = this._geoNear(docs, operation);
+          break;
+        case '$redact':
+          docs = docs.map(doc => this._redact(doc, operation)).filter(Boolean);
+          break;
+        case '$search':
+          docs = docs.filter(doc => this.model._matchQuery(doc, { $text: operation }));
           break;
         default:
           // Unknown stages pass through
@@ -640,6 +649,7 @@ class Aggregate {
   _evalExpr(expr, doc) {
     if (expr === null || expr === undefined) return expr;
     if (typeof expr === 'string' && expr.startsWith('$')) {
+      if (expr.startsWith('$$')) return expr;
       return getNestedValue(doc, expr.slice(1));
     }
     if (typeof expr !== 'object' || Array.isArray(expr)) return expr;
@@ -790,6 +800,57 @@ class Aggregate {
   async _readCollectionData(collectionName) {
     try { return this.model._getCollection(collectionName) || []; }
     catch { return []; }
+  }
+
+  _redact(doc, expression) {
+    const result = this._evalExpr(expression, doc);
+    if (result === '$$PRUNE') return null;
+    if (result === '$$KEEP' || result === '$$DESCEND') return doc;
+    // Default to doc if result is unknown
+    return doc;
+  }
+
+  _geoNear(docs, options) {
+    const { near, distanceField, maxDistance, query, minDistance, key, includeLocs } = options;
+    if (!distanceField) throw new Error('$geoNear requires "distanceField" option');
+    
+    const nearCoords = extractCoordinates(near.$geometry || near);
+    if (!nearCoords) throw new Error('$geoNear requires valid "near" coordinates');
+
+    let filtered = docs;
+    if (query) {
+      filtered = docs.filter(doc => this.model._matchQuery(doc, query));
+    }
+
+    const results = filtered.map(doc => {
+      const fieldPath = key || this._findCoordinateField(doc);
+      const docCoords = extractCoordinates(getNestedValue(doc, fieldPath));
+      
+      if (!docCoords) return null;
+
+      const distance = geolib.getDistance(
+        { latitude: docCoords[1], longitude: docCoords[0] },
+        { latitude: nearCoords[1], longitude: nearCoords[0] }
+      );
+
+      if (maxDistance !== undefined && distance > maxDistance) return null;
+      if (minDistance !== undefined && distance < minDistance) return null;
+
+      const newDoc = { ...doc, [distanceField]: distance };
+      if (includeLocs) newDoc[includeLocs] = docCoords;
+      return newDoc;
+    }).filter(Boolean);
+
+    // geoNear always sorts by distance
+    return results.sort((a, b) => a[distanceField] - b[distanceField]);
+  }
+
+  _findCoordinateField(doc) {
+    // Basic heuristic: find a field that looks like coordinates
+    for (const [key, val] of Object.entries(doc)) {
+      if (extractCoordinates(val)) return key;
+    }
+    return 'location'; // default fallback
   }
 }
 

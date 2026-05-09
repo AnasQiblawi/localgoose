@@ -14,14 +14,24 @@ const fileCache = new LRUCache({
 });
 const flushTimers = new Map();
 const pendingFlushes = new Map();
+const inFlightFlushes = new Map();
 
 async function flushDisk() {
-  while (pendingFlushes.size > 0) {
-    const promises = Array.from(pendingFlushes.values()).map(fn => fn());
-    pendingFlushes.clear();
-    for (const timer of flushTimers.values()) clearTimeout(timer);
-    flushTimers.clear();
-    await Promise.all(promises);
+  while (pendingFlushes.size > 0 || inFlightFlushes.size > 0) {
+    if (pendingFlushes.size > 0) {
+      const promises = Array.from(pendingFlushes.entries()).map(([key, fn]) => {
+        if (flushTimers.has(key)) {
+          clearTimeout(flushTimers.get(key));
+          flushTimers.delete(key);
+        }
+        pendingFlushes.delete(key);
+        return fn();
+      });
+      await Promise.all(promises);
+    }
+    if (inFlightFlushes.size > 0) {
+      await Promise.all(Array.from(inFlightFlushes.values()));
+    }
   }
 }
 
@@ -36,9 +46,9 @@ function _deepClone(obj) {
 }
 
 function clearCache(dirPath) {
-  // Selectively clear cache entries starting with dirPath
+  const absPath = path.resolve(dirPath);
   for (const key of fileCache.keys()) {
-    if (key.startsWith(dirPath)) {
+    if (key.startsWith(absPath)) {
       fileCache.delete(key);
       if (flushTimers.has(key)) {
         clearTimeout(flushTimers.get(key));
@@ -50,23 +60,25 @@ function clearCache(dirPath) {
 }
 
 async function withLock(filePath, fn) {
-  const currentLock = fileLocks.get(filePath) || Promise.resolve();
+  const absPath = path.resolve(filePath);
+  const currentLock = fileLocks.get(absPath) || Promise.resolve();
   const resultPromise = currentLock.then(() => fn(), () => fn());
-  fileLocks.set(filePath, resultPromise.catch(() => {}));
+  fileLocks.set(absPath, resultPromise.catch(() => {}));
   return resultPromise;
 }
 
 async function readJSON(filePath, options = {}) {
-  return withLock(filePath, async () => {
+  const absPath = path.resolve(filePath);
+  return withLock(absPath, async () => {
     const { defaultValue = [] } = options;
-    if (fileCache.has(filePath)) {
-      return _deepClone(fileCache.get(filePath));
+    if (fileCache.has(absPath)) {
+      return _deepClone(fileCache.get(absPath));
     }
     try {
-      const data = await fs.readFile(filePath, 'utf8');
+      const data = await fs.readFile(absPath, 'utf8');
       if (!data.trim()) {
-        fileCache.set(filePath, _deepClone(defaultValue));
-        await _writeJSONImpl(filePath, defaultValue, options);
+        fileCache.set(absPath, _deepClone(defaultValue));
+        await _writeJSONImpl(absPath, defaultValue, options);
         return defaultValue;
       }
       const parsed = JSON.parse(data, (key, value) => {
@@ -77,14 +89,14 @@ async function readJSON(filePath, options = {}) {
         }
         return value;
       });
-      fileCache.set(filePath, parsed);
+      fileCache.set(absPath, parsed);
       return _deepClone(parsed);
     } catch (error) {
       if (error.code === 'ENOENT') {
-        const dirPath = path.dirname(filePath);
+        const dirPath = path.dirname(absPath);
         if (dirPath) await fs.mkdir(dirPath, { recursive: true });
-        fileCache.set(filePath, _deepClone(defaultValue));
-        await _writeJSONImpl(filePath, defaultValue, options);
+        fileCache.set(absPath, _deepClone(defaultValue));
+        await _writeJSONImpl(absPath, defaultValue, options);
         return defaultValue;
       }
       throw error;
@@ -110,7 +122,15 @@ async function _writeJSONImpl(filePath, data, options = {}) {
 function _scheduleFlush(filePath, data, options) {
   if (flushTimers.has(filePath)) clearTimeout(flushTimers.get(filePath));
   
-  const flushFn = () => withLock(filePath, () => _writeJSONImpl(filePath, data, options));
+  const flushFn = async () => {
+    const writePromise = withLock(filePath, () => _writeJSONImpl(filePath, data, options));
+    inFlightFlushes.set(filePath, writePromise);
+    try {
+      await writePromise;
+    } finally {
+      if (inFlightFlushes.get(filePath) === writePromise) inFlightFlushes.delete(filePath);
+    }
+  };
   pendingFlushes.set(filePath, flushFn);
 
   const timer = setTimeout(() => {
@@ -122,8 +142,9 @@ function _scheduleFlush(filePath, data, options) {
 }
 
 async function writeJSON(filePath, data, options = {}) {
-  fileCache.set(filePath, _deepClone(data));
-  _scheduleFlush(filePath, data, options);
+  const absPath = path.resolve(filePath);
+  fileCache.set(absPath, _deepClone(data));
+  _scheduleFlush(absPath, data, options);
   return Promise.resolve();
 }
 
@@ -184,6 +205,15 @@ function setNestedValue(obj, path, value) {
 }
 
 // === Output Formatting ===
+function extractCoordinates(val) {
+  if (!val) return null;
+  if (Array.isArray(val) && val.length >= 2) return [parseFloat(val[0]), parseFloat(val[1])];
+  if (val.coordinates && Array.isArray(val.coordinates)) return [parseFloat(val.coordinates[0]), parseFloat(val.coordinates[1])];
+  if (val.type === 'Point' && Array.isArray(val.coordinates)) return [parseFloat(val.coordinates[0]), parseFloat(val.coordinates[1])];
+  if (val && val.lat !== undefined && (val.lng !== undefined || val.lon !== undefined)) return [parseFloat(val.lng || val.lon), parseFloat(val.lat)];
+  return null;
+}
+
 function formatOutput(obj, options = {}) {
   const { seen = new WeakSet(), maxDepth = 10, currentDepth = 0 } = options;
   if (currentDepth > maxDepth) return '[Max Depth Reached]';
@@ -207,9 +237,15 @@ function formatOutput(obj, options = {}) {
   return formatted;
 }
 
-module.exports = { readJSON, writeJSON, validateType, formatOutput, getNestedValue,
+module.exports = { 
+  readJSON, 
+  writeJSON, 
+  validateType, 
+  formatOutput, 
+  getNestedValue,
   setNestedValue,
-  formatOutput,
   flushDisk,
-  clearCache
+  clearCache,
+  extractCoordinates,
+  withLock
 };

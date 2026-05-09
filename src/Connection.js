@@ -1,13 +1,13 @@
 const fs = require('fs-extra');
 const path = require('path');
-const { clearCache } = require('./utils.js');
+const { clearCache, flushDisk } = require('./utils.js');
 const { Model } = require('./Model.js');
 const { Document } = require('./Document.js');
 const { EventEmitter } = require('events');
 
 class Connection {
   constructor(dbPath = './db') {
-    this.dbPath      = dbPath;
+    this.dbPath      = path.resolve(dbPath);
     this.models      = {};
     this.collections = {};
     this.config      = new Map();
@@ -21,10 +21,10 @@ class Connection {
     this.pass        = null;
   }
 
-  connect() {
+  async connect() {
     try {
       this.readyState = 2;
-      fs.mkdirSync(this.dbPath, { recursive: true });
+      await fs.mkdir(this.dbPath, { recursive: true });
       this.readyState = 1;
       return this;
     } catch (error) {
@@ -33,7 +33,8 @@ class Connection {
     }
   }
 
-  disconnect() {
+  async disconnect() {
+    await flushDisk();
     this.readyState = 3;
     this.models      = {};
     this.collections = {};
@@ -45,14 +46,17 @@ class Connection {
     return this.disconnect();
   }
 
-  dropDatabase() {
+  async dropDatabase() {
     try {
+      await flushDisk();
       clearCache(this.dbPath);
-      fs.rmSync(this.dbPath, { recursive: true, force: true });
+      if (fs.existsSync(this.dbPath)) {
+        fs.rmSync(this.dbPath, { recursive: true, force: true });
+      }
       this.collections = {};
-      return Promise.resolve(true);
+      return true;
     } catch (error) {
-      return Promise.resolve(false);
+      return false;
     }
   }
 

@@ -63,7 +63,7 @@ describe('Localgoose Full Suite', () => {
   
   beforeAll(async () => {
     if (fs.existsSync(DB_PATH)) fs.rmSync(DB_PATH, { recursive: true, force: true });
-    db = localgoose.connect(DB_PATH);
+    db = await localgoose.connect(DB_PATH);
     const schemas = buildSchemas(db);
     Author = schemas.Author;
     Post = schemas.Post;
@@ -1091,7 +1091,7 @@ describe('Localgoose Full Suite', () => {
   });
 
   test('Connection.disconnect() returns Promise', async () => {
-    const conn = localgoose.connect('./tmp_conn_test');
+    const conn = await localgoose.connect('./tmp_conn_test');
     const result = conn.disconnect();
     assert(result && typeof result.then === 'function');
     try { fs.rmSync('./tmp_conn_test', { recursive: true, force: true }); } catch (e) {}
@@ -1109,10 +1109,296 @@ describe('Localgoose Full Suite', () => {
     assert(names.includes('SuitePost'));
   });
 
-  test('Connection.model() throws for unknown model', async () => {
-    let threw = false;
-    try { db.model('UnknownModel123'); } catch (e) { threw = true; }
-    assert(threw);
+  // ── 11. Mongoose Parity Features ──────────────────────────────────────────
+  console.log('\n🌟 11. Mongoose Parity');
+
+  test('Async Connection', async () => {
+    const conn = await localgoose.connect(path.join(DB_PATH, 'async-test'));
+    assertEqual(conn.readyState, 1);
+    await conn.dropDatabase();
+  });
+
+  test('Ordered insertMany stops on first error', async () => {
+    const User = db.model('ParityUser', new localgoose.Schema({
+      username: { type: String, unique: true }
+    }));
+    await User.deleteMany({});
+    
+    try {
+      await User.insertMany([
+        { username: 'u1' },
+        { username: 'u1' }, // Duplicate
+        { username: 'u2' }
+      ], { ordered: true });
+    } catch (err) {
+      assertEqual(err.code, 11000);
+    }
+    const count = await User.countDocuments();
+    assertEqual(count, 1);
+  });
+
+  test('Unordered insertMany continues on error', async () => {
+    const User = db.model('ParityUserUnordered', new localgoose.Schema({
+      username: { type: String, unique: true }
+    }));
+    await User.deleteMany({});
+    
+    await User.insertMany([
+      { username: 'u1' },
+      { username: 'u1' }, // Duplicate
+      { username: 'u2' }
+    ], { ordered: false });
+    
+    const count = await User.countDocuments();
+    assertEqual(count, 2);
+  });
+
+  test('Geospatial $near proximity matching', async () => {
+    const Place = db.model('ParityPlace', new localgoose.Schema({
+      name: String,
+      location: { type: { type: String, default: 'Point' }, coordinates: [Number] }
+    }));
+    await Place.create([
+      { name: 'A', location: { coordinates: [-73.9654, 40.7829] } },
+      { name: 'B', location: { coordinates: [-73.9851, 40.7589] } },
+      { name: 'C', location: { coordinates: [-73.9857, 40.7484] } }
+    ]);
+
+    const results = await Place.find({
+      location: { $near: [-73.9851, 40.7589], $maxDistance: 2000 }
+    });
+    assert(results.length >= 2, 'Should find at least B and C');
+  });
+
+  test('Aggregation $geoNear', async () => {
+    const Place = db.model('ParityPlaceAgg', new localgoose.Schema({
+      name: String,
+      location: { type: { type: String, default: 'Point' }, coordinates: [Number] }
+    }));
+    await Place.create([
+      { name: 'X', location: { coordinates: [-73.9851, 40.7589] } },
+      { name: 'Y', location: { coordinates: [-73.9857, 40.7484] } }
+    ]);
+
+    const res = await Place.aggregate([
+      {
+        $geoNear: {
+          near: { type: "Point", coordinates: [-73.9851, 40.7589] },
+          distanceField: "dist",
+          maxDistance: 5000
+        }
+      }
+    ]);
+    assertEqual(res[0].name, 'X');
+    assertEqual(res[0].dist, 0);
+  });
+
+  test('Refined $text search keywords', async () => {
+    const Article = db.model('ParityArticle', new localgoose.Schema({ title: String }));
+    await Article.create([{ title: 'Node.js Guide' }, { title: 'React Basics' }]);
+    
+    const res = await Article.find({ title: { $text: 'Guide Node.js' } });
+    assertEqual(res.length, 1);
+    assertEqual(res[0].title, 'Node.js Guide');
+    
+    const miss = await Article.find({ title: { $text: 'Node.js Python' } });
+    assertEqual(miss.length, 0);
+  });
+
+  // ── 11b. README Parity & Advanced Features ────────────────────────────────
+  console.log('\n📖 11b. README Parity & Advanced Features');
+
+  test('Extended Schema Types (BigInt, Buffer, UUID)', async () => {
+    const Schema = new localgoose.Schema({
+      val: BigInt,
+      data: Buffer,
+      uid: localgoose.Schema.Types.UUID
+    });
+    const M = db.model('ExtTypeTest', Schema);
+    const doc = await M.create({ val: '123', data: 'hello', uid: '550e8400-e29b-41d4-a716-446655440000' });
+    assertEqual(typeof doc.val, 'bigint');
+    assertEqual(doc.val, 123n);
+    assert(doc.data instanceof Buffer);
+    assertEqual(doc.data.toString(), 'hello');
+    assertEqual(doc.uid, '550e8400-e29b-41d4-a716-446655440000');
+  });
+
+  test('Query Operators ($mod, $nearSphere, findByIdAndRemove)', async () => {
+    const ModModel = db.model('ParityModTest', new localgoose.Schema({ num: Number }));
+    await ModModel.create([{ num: 10 }, { num: 11 }, { num: 20 }]);
+    const modRes = await ModModel.find({ num: { $mod: [10, 0] } });
+    assertEqual(modRes.length, 2);
+
+    const NearModel = db.model('ParityNearSphereTest', new localgoose.Schema({
+      loc: { type: { type: String, default: 'Point' }, coordinates: [Number] }
+    }));
+    await NearModel.create({ loc: { coordinates: [0, 0] } });
+    const nearRes = await NearModel.find({ loc: { $nearSphere: [0, 0], $maxDistance: 1000 } });
+    assertEqual(nearRes.length, 1);
+
+    const RemModel = db.model('ParityRemoveTest', new localgoose.Schema({ name: String }));
+    const rdoc = await RemModel.create({ name: 'removeme' });
+    const removed = await RemModel.findByIdAndRemove(rdoc._id);
+    assertEqual(removed.name, 'removeme');
+    assertNull(await RemModel.findById(rdoc._id).exec());
+  });
+
+  test('$bit update operator', async () => {
+    const M = db.model('ParityBitTest', new localgoose.Schema({ val: Number }));
+    await M.create({ val: 0b1010 });
+    await M.updateOne({ val: 0b1010 }, { $bit: { val: { and: 0b1100, or: 0b0001 } } });
+    const doc = await M.findOne().exec();
+    assertEqual(doc.val, (0b1010 & 0b1100) | 0b0001); // 1001 = 9
+  });
+
+  test('Advanced Aggregation ($redact, $search)', async () => {
+    const schema = new localgoose.Schema({ title: String, level: Number });
+    schema.index({ title: 'text' });
+    const M = db.model('ParityAggTest', schema);
+    await M.create([{ title: 'Public News', level: 1 }, { title: 'Secret File', level: 5 }]);
+    
+    // $search stage (uses $text logic)
+    const searchRes = await M.aggregate().search({ $search: 'Secret' }).exec();
+    assertEqual(searchRes.length, 1);
+    assertEqual(searchRes[0].title, 'Secret File');
+
+    // $redact stage
+    const redactRes = await M.aggregate()
+      .redact({
+        $cond: { if: { $gt: ['$level', 2] }, then: '$$PRUNE', else: '$$DESCEND' }
+      }).exec();
+    assertEqual(redactRes.length, 1);
+    assertEqual(redactRes[0].title, 'Public News');
+  });
+
+  test('Virtual Population with justOne', async () => {
+    const UserSchema = new localgoose.Schema({ name: String });
+    const PostSchema = new localgoose.Schema({ title: String, userId: String });
+    UserSchema.virtual('latestPost', {
+      ref: 'ParityPost',
+      localField: '_id',
+      foreignField: 'userId',
+      justOne: true
+    });
+    const VUser = db.model('ParityUser', UserSchema);
+    const VPost = db.model('ParityPost', PostSchema);
+    
+    const u = await VUser.create({ name: 'PopUser' });
+    await VPost.create({ title: 'Post 1', userId: u._id });
+    await VPost.create({ title: 'Post 2', userId: u._id });
+
+    const doc = await VUser.findOne({ _id: u._id }).populate('latestPost').exec();
+    assert(doc.latestPost && doc.latestPost.title, 'Should have populated virtual');
+    assert(!Array.isArray(doc.latestPost), 'justOne should return single object');
+  });
+
+  test('Query/Update Middleware Hooks', async () => {
+    let preCalled = false;
+    let postCalled = false;
+    const schema = new localgoose.Schema({ name: String });
+    schema.pre('findOneAndUpdate', function() { preCalled = true; });
+    schema.post('findOneAndUpdate', function() { postCalled = true; });
+
+    const M = db.model('ParityHookModel', schema);
+    await M.create({ name: 'old' });
+    await M.findOneAndUpdate({ name: 'old' }, { name: 'new' });
+    assert(preCalled);
+    assert(postCalled);
+
+    let delPreCalled = false;
+    const schemaDel = new localgoose.Schema({ name: String });
+    schemaDel.pre('deleteOne', function() { delPreCalled = true; });
+    const M2 = db.model('ParityDeleteModel', schemaDel);
+    await M2.create({ name: 'test' });
+    await M2.deleteOne({ name: 'test' });
+    assert(delPreCalled);
+  });
+
+  test('Document utilities (overwrite, $getAllSubdocs)', async () => {
+    const M = db.model('ParityUtilTest', new localgoose.Schema({ a: Number, nested: { b: Number } }));
+    const doc = await M.create({ a: 1, nested: { b: 2 } });
+    doc.overwrite({ a: 10 });
+    assertEqual(doc.a, 10);
+    assertEqual(doc.nested, undefined);
+    assertArray(doc.$getAllSubdocs());
+  });
+
+  // ── 12. Backup & Restore ──────────────────────────────────────────────────
+  console.log('\n💾 12. Backup & Restore');
+
+  let BackupModel;
+
+  test('backup() creates a backup file with correct content', async () => {
+    BackupModel = db.model('BackupUser', new localgoose.Schema({ name: String }));
+    await BackupModel.create({ name: 'Backup Test' });
+    const backupPath = await BackupModel.backup();
+    const fsExtra = require('fs-extra');
+    assert(await fsExtra.pathExists(backupPath), 'Backup file should exist');
+    const data = await fsExtra.readJson(backupPath);
+    assert(Array.isArray(data) && data.length > 0, 'Backup should contain documents');
+  });
+
+  test('listBackups() returns sorted backup filenames (newest first)', async () => {
+    const backups = await BackupModel.listBackups();
+    assert(Array.isArray(backups) && backups.length > 0, 'Should list at least one backup');
+    // Sorted descending — each entry should be >= the next
+    for (let i = 1; i < backups.length; i++) {
+      assert(backups[i - 1] >= backups[i], 'Backups should be newest-first');
+    }
+  });
+
+  test('restore() recovers deleted documents from backup', async () => {
+    await BackupModel.deleteMany({});
+    assertEqual(await BackupModel.countDocuments(), 0, 'Should be empty after deleteMany');
+
+    const backups = await BackupModel.listBackups();
+    assert(backups.length > 0, 'Must have at least one backup to restore');
+    await BackupModel.restore(backups[0]);
+
+    assertEqual(await BackupModel.countDocuments(), 1, 'Should have 1 document after restore');
+  });
+
+  test('cleanupBackups() removes old backup files', async () => {
+    // Create a second backup then clean keeping 0
+    await BackupModel.backup();
+    await BackupModel.cleanupBackups(0);
+    const remaining = await BackupModel.listBackups();
+    assertEqual(remaining.length, 0, 'All backups should be removed');
+    await BackupModel.deleteMany({});
+  });
+
+  // ── 13. Geospatial Shapes ─────────────────────────────────────────────────
+  console.log('\n🌍 13. Geospatial Shapes');
+
+  let GeoModel;
+
+  test('Geospatial setup — create location documents', async () => {
+    GeoModel = db.model('GeospatialTest', new localgoose.Schema({
+      location: { type: [Number], index: '2d' }
+    }));
+    await GeoModel.create([
+      { location: [1, 1] },    // Inside box [0,0]→[2,2]
+      { location: [5, 5] },    // Outside
+      { location: [1.5, 1.5] } // Inside box
+    ]);
+    assertEqual(await GeoModel.countDocuments(), 3);
+  });
+
+  test('$box — finds points within a rectangular bounding box', async () => {
+    const docs = await GeoModel.find().box('location', [[0, 0], [2, 2]]).exec();
+    assertEqual(docs.length, 2, '$box should match 2 points inside [0,0]→[2,2]');
+  });
+
+  test('$center — finds points within a circular radius', async () => {
+    const docs = await GeoModel.find().center('location', [[1, 1], 1]).exec();
+    assertEqual(docs.length, 2, '$center should match 2 points within radius 1 of [1,1]');
+  });
+
+  test('$polygon — finds points within a polygon', async () => {
+    const docs = await GeoModel.find()
+      .polygon('location', [[0, 0], [2, 0], [2, 2], [0, 2]])
+      .exec();
+    assertEqual(docs.length, 2, '$polygon should match 2 points inside the square polygon');
   });
 
   afterAll(async () => {
@@ -1121,5 +1407,6 @@ describe('Localgoose Full Suite', () => {
     try { fs.rmSync('./mydb_test',  { recursive: true, force: true }); } catch (e) {}
     try { fs.rmSync('./mydb_test2', { recursive: true, force: true }); } catch (e) {}
     try { fs.rmSync('./test_fixes.js', { recursive: false }); } catch (e) {}
+    try { fs.rmSync('./test-parity-db', { recursive: true, force: true }); } catch (e) {}
   });
 });

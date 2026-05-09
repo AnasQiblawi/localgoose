@@ -1,16 +1,26 @@
 const { localgoose } = require("./src/index.js");
 
+/**
+ * Localgoose: Master Reference Example
+ * This file provides a comprehensive overview of the library's core features.
+ * For more targeted learning, see:
+ * - ./examples/beginner.js
+ * - ./examples/intermediate.js
+ * - ./examples/professional.js
+ * - ./examples/maximum_capability.js
+ */
+
 const logOutput = (label, data) => {
-  console.log(`\n${label}`);
+  console.log(`\n--- ${label} ---`);
   try {
     if (Array.isArray(data)) {
-      console.log(JSON.stringify(data.map(doc => 
+      console.log(JSON.stringify(data.map(doc =>
         doc && typeof doc.toObject === 'function' ? doc.toObject() : doc
       ), null, 2));
     } else if (data && typeof data === 'object') {
       console.log(JSON.stringify(
-        data.toObject ? data.toObject() : data, 
-        null, 
+        data.toObject ? data.toObject() : data,
+        null,
         2
       ));
     } else {
@@ -34,7 +44,7 @@ const main = async () => {
     });
 
     // Add instance method to Person
-    personSchema.method('getFullName', function() {
+    personSchema.method('getFullName', function () {
       return `${this.name} (${this.age})`;
     });
 
@@ -91,12 +101,12 @@ const main = async () => {
     });
 
     // Add compound virtual property
-    userSchema.virtual('displayName').get(function() {
+    userSchema.virtual('displayName').get(function () {
       return `${this.username} (${this.email})`;
     });
 
     // Add virtual with dependencies
-    userSchema.virtual('status').get(function() {
+    userSchema.virtual('status').get(function () {
       if (!this.isActive) return 'inactive';
       if (!this.lastLogin) return 'new';
       const daysSinceLogin = (Date.now() - this.lastLogin) / (1000 * 60 * 60 * 24);
@@ -108,7 +118,7 @@ const main = async () => {
       return `${this.username} (${this.age}) - ${this.email}`;
     });
 
-    userSchema.method('updateProfile', async function(profileData) {
+    userSchema.method('updateProfile', async function (profileData) {
       Object.assign(this.profile, profileData);
       return this.save();
     });
@@ -118,7 +128,7 @@ const main = async () => {
       return this.findOne({ email });
     });
 
-    userSchema.static('findActiveUsers', async function() {
+    userSchema.static('findActiveUsers', async function () {
       return this.find({ isActive: true });
     });
 
@@ -133,14 +143,14 @@ const main = async () => {
     });
 
     // Add validation to Post
-    postSchema.pre('save', function() {
+    postSchema.pre('save', function () {
       if (this.content.length < 10) {
         throw new Error('Post content must be at least 10 characters long');
       }
     });
 
     // Add instance method to Post
-    postSchema.method('addTag', async function(tag) {
+    postSchema.method('addTag', async function (tag) {
       if (!this.tags.includes(tag)) {
         this.tags.push(tag);
         return this.save();

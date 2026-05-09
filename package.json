@@ -1,6 +1,6 @@
 {
   "name": "localgoose",
-  "version": "1.0.58",
+  "version": "1.0.59",
   "description": "A lightweight, file-based ODM Database for Node.js, inspired by Mongoose",
   "main": "src/index.js",
   "scripts": {
@@ -30,7 +30,6 @@
     "bson": "^6.2.0",
     "fs-extra": "^11.1.1",
     "geolib": "^3.3.4",
-    "lodash": "^4.17.21",
     "lru-cache": "^11.2.7",
     "write-file-atomic": "^7.0.1"
   },

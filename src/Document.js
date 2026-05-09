@@ -2,9 +2,9 @@ const { EventEmitter } = require('events');
 
 class Document {
   constructor(obj, schema, model) {
-    this._doc      = { ...obj };
     this._schema   = schema;
     this._model    = model;
+    this._doc      = this._castInitial(obj);
     this._modifiedPaths = new Set();
     this._populated     = new Map();
     this._parent  = null;
@@ -96,6 +96,8 @@ class Document {
   overwrite(obj) {
     this._doc = { _id: this._id, ...obj };
     this._modifiedPaths = new Set(Object.keys(obj));
+    // Re-apply casting if any
+    this._doc = this._castInitial(this._doc);
     return this;
   }
 
@@ -308,10 +310,24 @@ class Document {
   $getAllSubdocs() {
     const subdocs = [];
     const addSubdocs = (obj, path = '') => {
+      if (!obj || typeof obj !== 'object') return;
       for (const [key, value] of Object.entries(obj)) {
         const fullPath = path ? `${path}.${key}` : key;
-        if (value instanceof Document) subdocs.push({ doc: value, path: fullPath });
-        else if (value && typeof value === 'object' && !Array.isArray(value)) addSubdocs(value, fullPath);
+        if (value instanceof Document) {
+          subdocs.push(value);
+          value.$getAllSubdocs().forEach(sd => subdocs.push(sd));
+        } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+          addSubdocs(value, fullPath);
+        } else if (Array.isArray(value)) {
+          value.forEach((item, index) => {
+            if (item instanceof Document) {
+              subdocs.push(item);
+              item.$getAllSubdocs().forEach(sd => subdocs.push(sd));
+            } else if (item && typeof item === 'object') {
+              addSubdocs(item, `${fullPath}.${index}`);
+            }
+          });
+        }
       }
     };
     addSubdocs(this._doc);
@@ -396,6 +412,16 @@ class Document {
     if (vKey && this._lastVersion !== this._doc[vKey]) {
       throw new Error('VersionError: Document has been modified since retrieval');
     }
+  }
+
+  _castInitial(obj) {
+    const casted = { ...obj };
+    for (const [p, st] of this._schema._paths.entries()) {
+      if (casted[p] !== undefined) {
+        try { casted[p] = st.cast(casted[p]); } catch (e) {}
+      }
+    }
+    return casted;
   }
 }
 

@@ -75,12 +75,18 @@ class Schema {
         // Shorthand: field: String
         parsed[key] = { type: value };
       } else if (Array.isArray(value)) {
-        parsed[key] = { type: Array, schema: value[0] ? new Schema(value[0]) : null };
+        const itemDef = value[0];
+        const isPlainObj = typeof itemDef === 'object' && itemDef !== null && !Array.isArray(itemDef) && !(itemDef instanceof Schema);
+        const schema = isPlainObj ? new Schema(itemDef) : (itemDef instanceof Schema ? itemDef : null);
+        parsed[key] = { type: value, schema };
       } else if (typeof value === 'object') {
         if (value.type instanceof Schema) {
           parsed[key] = { ...value, schema: value.type, type: Object };
         } else if (value.type && Array.isArray(value.type)) {
-          parsed[key] = { type: Array, schema: value.type[0] ? new Schema(value.type[0]) : null };
+          const itemDef = value.type[0];
+          const isPlainObj = typeof itemDef === 'object' && itemDef !== null && !Array.isArray(itemDef) && !(itemDef instanceof Schema);
+          const schema = isPlainObj ? new Schema(itemDef) : (itemDef instanceof Schema ? itemDef : null);
+          parsed[key] = { ...value, type: value.type, schema };
         } else if (value.type) {
           parsed[key] = {
             ...value,
@@ -241,8 +247,13 @@ class Schema {
     return this;
   }
 
-  virtual(name) {
-    if (!this.virtuals[name]) this.virtuals[name] = new VirtualType({ path: name });
+  virtual(name, options = {}) {
+    if (typeof name === 'object') {
+      for (const [p, opts] of Object.entries(name)) this.virtual(p, opts);
+      return this;
+    }
+    const opts = typeof options === 'object' ? { ...options, path: name } : { path: name };
+    if (!this.virtuals[name]) this.virtuals[name] = new VirtualType(opts);
     return this.virtuals[name];
   }
 

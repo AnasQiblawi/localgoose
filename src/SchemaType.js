@@ -166,6 +166,16 @@ class SchemaType {
       case Boolean:
         val = Boolean(val);
         break;
+      case BigInt:
+        try { val = BigInt(val); } catch (e) { throw new Error(`Cast to BigInt failed for value "${val}" at path "${this.path}"`); }
+        break;
+      case Buffer:
+        if (!(val instanceof Buffer)) {
+          if (typeof val === 'string') val = Buffer.from(val, 'utf8');
+          else if (Array.isArray(val)) val = Buffer.from(val);
+          else throw new Error(`Cast to Buffer failed for value "${val}" at path "${this.path}"`);
+        }
+        break;
     }
 
     // Enum validation
@@ -342,6 +352,30 @@ class SchemaType {
         return true;
       },
       message: message || `{PATH} must be no more than ${value}`
+    });
+    return this;
+  }
+
+  minlength(value, message) {
+    this._minlength = value;
+    this.validate({
+      validator: (val) => {
+        if (typeof val === 'string') return val.length >= value;
+        return true;
+      },
+      message: message || `{PATH} must be at least ${value} characters`
+    });
+    return this;
+  }
+
+  maxlength(value, message) {
+    this._maxlength = value;
+    this.validate({
+      validator: (val) => {
+        if (typeof val === 'string') return val.length <= value;
+        return true;
+      },
+      message: message || `{PATH} must be at most ${value} characters`
     });
     return this;
   }

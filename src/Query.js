@@ -41,7 +41,19 @@ class Query {
 
     // Run pre-find / pre-findOne middleware
     const hookName = this._limit === 1 ? 'findOne' : 'find';
-    await this._runSchemaMiddleware('pre', hookName);
+    // Apply geometry filter if present
+    if (this._geometry) {
+      const { type, path, coordinates } = this._geometry;
+      this.conditions[path] = { ...this.conditions[path], [`$${type}`]: coordinates };
+    }
+
+    // Apply geo comparison filter if present (near, nearSphere, geoIntersects)
+    if (this._geoComparison && this._currentPath) {
+      this.conditions[this._currentPath] = {
+        ...this.conditions[this._currentPath],
+        ...this._geoComparison
+      };
+    }
 
     let docs = await this.model._find(this.conditions);
 
@@ -141,39 +153,68 @@ class Query {
 
       for (const segment of pathSegments) {
         currentPath = currentPath ? `${currentPath}.${segment}` : segment;
-        const pathSchema = this.model.schema._paths.get(currentPath);
-        if (!pathSchema || !pathSchema.options || !pathSchema.options.ref) {
+        
+        let pathSchema = this.model.schema._paths.get(currentPath);
+        let virtual = this.model.schema.virtuals[currentPath];
+        let refOptions = (pathSchema && pathSchema.options) || (virtual && virtual.options);
+
+        if (!refOptions || !refOptions.ref) {
           currentDoc = currentDoc ? currentDoc[segment] : undefined;
           continue;
         }
 
-        const refModel = this.model.db.models[pathSchema.options.ref];
+        const refModel = this.model.db.models[refOptions.ref];
         if (!refModel) { currentDoc = currentDoc ? currentDoc[segment] : undefined; continue; }
 
-        const value = currentDoc ? currentDoc._doc ? currentDoc._doc[segment] : currentDoc[segment] : undefined;
-        if (!value) { currentDoc = undefined; continue; }
-
         try {
-          if (Array.isArray(value)) {
-            let populatedValues = await Promise.all(value.map(id => {
-              let q = refModel.findOne({ _id: id });
+          if (virtual) {
+            // Virtual population
+            const localValue = currentDoc.get(refOptions.localField || '_id');
+            if (localValue === undefined) {
+              currentDoc = undefined; continue;
+            }
+            
+            let q = refModel.find({ [refOptions.foreignField || '_id']: localValue });
+            if (select) q = q.select(select);
+            if (match) q = q.where(match);
+            if (popOptions) q = q.option(popOptions);
+
+            let pv = await q.exec();
+            if (refOptions.justOne) pv = Array.isArray(pv) ? (pv[0] || null) : pv;
+            
+            currentDoc._populated.set(segment, pv);
+            Object.defineProperty(currentDoc, segment, {
+              get: function() { return this._populated.get(segment); },
+              configurable: true, enumerable: true
+            });
+            // Also update _doc for toObject/toJSON
+            currentDoc._doc[segment] = pv;
+          } else {
+            // Standard ref population
+            const value = currentDoc ? currentDoc._doc ? currentDoc._doc[segment] : currentDoc[segment] : undefined;
+            if (!value) { currentDoc = undefined; continue; }
+
+            if (Array.isArray(value)) {
+              let populatedValues = await Promise.all(value.map(id => {
+                let q = refModel.findOne({ _id: id });
+                if (select) q = q.select(select);
+                if (match) Object.assign(q.conditions, match);
+                return q.exec();
+              }));
+              populatedValues = populatedValues.filter(Boolean);
+              if (currentDoc._doc) currentDoc._doc[segment] = populatedValues;
+              currentDoc[segment] = populatedValues;
+              currentDoc._populated.set(segment, populatedValues);
+            } else {
+              let q = refModel.findOne({ _id: value });
               if (select) q = q.select(select);
               if (match) Object.assign(q.conditions, match);
-              return q.exec();
-            }));
-            populatedValues = populatedValues.filter(Boolean);
-            if (currentDoc._doc) currentDoc._doc[segment] = populatedValues;
-            currentDoc[segment] = populatedValues;
-            currentDoc._populated.set(segment, populatedValues);
-          } else {
-            let q = refModel.findOne({ _id: value });
-            if (select) q = q.select(select);
-            if (match) Object.assign(q.conditions, match);
-            const pv = await q.exec();
-            if (pv) {
-              if (currentDoc._doc) currentDoc._doc[segment] = pv;
-              currentDoc[segment] = pv;
-              currentDoc._populated.set(segment, pv);
+              const pv = await q.exec();
+              if (pv) {
+                if (currentDoc._doc) currentDoc._doc[segment] = pv;
+                currentDoc[segment] = pv;
+                currentDoc._populated.set(segment, pv);
+              }
             }
           }
         } catch (err) {
@@ -418,8 +459,25 @@ class Query {
   polygon(path, coords)   { this._geometry = { type: 'polygon', path, coordinates: coords }; return this; }
   geometry(path, geo)     { this._geometry = { type: 'geometry', path, coordinates: geo }; return this; }
   intersects(arg)         { this._geoComparison = { $geoIntersects: arg }; return this; }
-  near(path, coords)      { this._geoComparison = { $near: coords }; return this; }
-  nearSphere(path, coords){ this._geoComparison = { $nearSphere: coords }; return this; }
+  near(path, coords) {
+    // If called as .near(coords) after .where(path), use _currentPath
+    if (coords === undefined) {
+      this._geoComparison = { $near: path };
+    } else {
+      this._currentPath = path;
+      this._geoComparison = { $near: coords };
+    }
+    return this;
+  }
+  nearSphere(path, coords) {
+    if (coords === undefined) {
+      this._geoComparison = { $nearSphere: path };
+    } else {
+      this._currentPath = path;
+      this._geoComparison = { $nearSphere: coords };
+    }
+    return this;
+  }
   maxDistance(value)      { if (this._geoComparison) this._geoComparison.$maxDistance = value; return this; }
   within()                { return this; }
 

@@ -15,7 +15,7 @@ const main = async () => {
   const DB_PATH = './max_capability_db';
   try {
     console.log('--- Phase 1: Setup & Schema definition ---');
-    const db = localgoose.connect(DB_PATH);
+    const db = await localgoose.connect(DB_PATH);
 
     // 1. Base Schema (Inheritance)
     const timestampsSchema = new localgoose.Schema({}, { timestamps: true });
@@ -119,9 +119,8 @@ const main = async () => {
     await localgoose.flushDisk();
     console.log('Disk flushed.');
 
-    // Backup
-    const backupFile = path.join(process.cwd(), 'user_backup.json');
-    await User.backup(backupFile);
+    // Backup — backup() auto-generates a timestamped filename and returns the path
+    const backupFile = await User.backup();
     console.log('Backup created at:', backupFile);
 
     // Destructive op then Restore

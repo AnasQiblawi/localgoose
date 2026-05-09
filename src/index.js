@@ -15,12 +15,12 @@ const localgoose = {
   // Convenience: localgoose.ObjectId
   ObjectId,
 
-  createConnection: (dbPath) => {
+  createConnection: async (dbPath) => {
     const connection = new Connection(dbPath);
-    return connection;
+    return connection.connect();
   },
 
-  connect: (dbPath) => {
+  connect: async (dbPath) => {
     const connection = new Connection(dbPath);
     return connection.connect();
   },
